@@ -351,8 +351,14 @@ export class FusionLearner {
         completed.push(item);
         for (const pattern of this.patternsMatchingToolSuffix(item.tools)) {
           if (item.visited.has(pattern.id)) continue;
-          const probability = clampProbability(item.probability * patternReliability(pattern));
           const step = patternToStep(pattern, patternReliability(pattern));
+          // A longer path is only a stronger fusion candidate when the new
+          // step consumes an earlier structured result. Sequential calls with
+          // entirely task-supplied arguments are ordinary workflow adjacency,
+          // not evidence that the calls should be fused.
+          const addedDataflowEdges = outputDependencyCount(step);
+          if (addedDataflowEdges === 0) continue;
+          const probability = clampProbability(item.probability * patternReliability(pattern));
           const visited = new Set(item.visited);
           visited.add(pattern.id);
           next.push({
@@ -361,7 +367,7 @@ export class FusionLearner {
             tools: [...item.tools, pattern.targetTool],
             probability,
             score: item.score + probability * Math.max(1, pattern.averageDurationMs),
-            dataflowEdges: item.dataflowEdges + outputDependencyCount(step),
+            dataflowEdges: item.dataflowEdges + addedDataflowEdges,
             visited,
           });
         }

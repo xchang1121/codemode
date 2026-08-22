@@ -22,6 +22,13 @@
       "import": "./dist/index.js"
     }
   },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "quickjs-emscripten": "0.32.0",
+    "zod": "4.4.3"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "npm run typecheck && npm run test",

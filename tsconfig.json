@@ -3,6 +3,7 @@
     "target": "ES2023",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
     "lib": ["ES2023"],
     "strict": true,
     "noUncheckedIndexedAccess": true,

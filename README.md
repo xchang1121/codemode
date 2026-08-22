@@ -26,8 +26,11 @@ codemode gateway
 
 ## Development status
 
-The first implementation stage contains the framework-neutral online learning
-core. MCP aggregation and sandbox execution are added in the following stages.
+The repository currently includes the framework-neutral learner, namespaced
+aggregation of stdio/HTTP MCP servers, typed tool discovery, a QuickJS/WASM
+sandbox, direct passthrough tools, and proactive learned fusion hints. A
+configuration-driven CLI and durable learner state are the next implementation
+stage.
 
 ```sh
 npm install --ignore-scripts
