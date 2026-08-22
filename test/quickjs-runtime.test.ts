@@ -73,7 +73,7 @@ describe("QuickJsCodeRuntime", () => {
       bindings: [],
     });
     const invalid = await runtime.run({
-      program: "return { missing: undefined };",
+      program: "globalThis.TypeError = null; return { missing: undefined };",
       bindings: [],
     });
 
@@ -119,6 +119,19 @@ describe("QuickJsCodeRuntime", () => {
     );
   });
 
+  test("classifies an already-aborted run without entering the program", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("caller cancelled"));
+    const runtime = new QuickJsCodeRuntime();
+    const result = await runtime.run({
+      program: "while (true) {}",
+      bindings: [],
+      signal: controller.signal,
+    });
+
+    expect(result.error).toEqual({ kind: "abort", message: "caller cancelled" });
+  });
+
   test("rejects invalid binding declarations as contract misuse", async () => {
     const runtime = new QuickJsCodeRuntime();
 
@@ -126,6 +139,14 @@ describe("QuickJsCodeRuntime", () => {
       program: "return 1;",
       bindings: [{ global: "console", members: [] }],
     })).rejects.toThrow("Invalid binding namespace name");
+    await expect(runtime.run({
+      program: "return 1;",
+      bindings: [{
+        global: "HostCallError",
+        errorClass: { name: "HostCallError", memberNameProperty: "bindingName" },
+        members: [],
+      }],
+    })).rejects.toThrow("error class collides with a namespace");
   });
 });
 

@@ -91,6 +91,7 @@ export class QuickJsCodeRuntime implements CodeRuntime {
     let logBytes = 0;
     let outputLimitMessage: string | undefined;
     let timedOut = false;
+    let internalFailure: string | undefined;
     let closed = false;
     const pending = new Set<Promise<void>>();
     const deferreds = new Set<QuickJSDeferredPromise>();
@@ -113,6 +114,7 @@ export class QuickJsCodeRuntime implements CodeRuntime {
       if (jobs.error) {
         const message = dumpQuickJsError(vm, jobs.error);
         jobs.error.dispose();
+        internalFailure = message;
         runController.abort(new Error(message));
       }
     };
@@ -186,6 +188,10 @@ export class QuickJsCodeRuntime implements CodeRuntime {
         evaluation.error.dispose();
         return timedOut
           ? failure("timeout", `Code execution exceeded ${this.options.timeoutMs}ms timeout`, logs)
+          : internalFailure !== undefined
+          ? failure("exception", internalFailure, logs)
+          : runController.signal.aborted
+          ? failure("abort", abortMessage(runController.signal), logs)
           : failure("exception", message, logs);
       }
       promiseHandle = evaluation.value;
@@ -201,6 +207,8 @@ export class QuickJsCodeRuntime implements CodeRuntime {
         const invalidOutput = invalidOutputMessage(message);
         return timedOut
           ? failure("timeout", `Code execution exceeded ${this.options.timeoutMs}ms timeout`, logs)
+          : internalFailure !== undefined
+          ? failure("exception", internalFailure, logs)
           : runController.signal.aborted
           ? failure("abort", abortMessage(runController.signal), logs)
           : invalidOutput !== undefined
@@ -230,6 +238,8 @@ export class QuickJsCodeRuntime implements CodeRuntime {
     } catch (error) {
       return timedOut
         ? failure("timeout", `Code execution exceeded ${this.options.timeoutMs}ms timeout`, logs)
+        : internalFailure !== undefined
+        ? failure("exception", internalFailure, logs)
         : runController.signal.aborted
         ? failure("abort", abortMessage(runController.signal), logs)
         : failure("exception", errorMessage(error), logs);
@@ -259,12 +269,17 @@ function compileBindings(bindings: readonly CodeBindingNamespace[]): {
   let sequence = 0;
   for (const namespace of bindings) {
     assertGlobalName(namespace.global, "binding namespace");
-    if (globals.has(namespace.global)) {
+    if (globals.has(namespace.global) || errorClasses.has(namespace.global)) {
       throw new TypeError(`Duplicate code binding namespace: ${namespace.global}`);
     }
     globals.add(namespace.global);
     if (namespace.errorClass) {
       assertGlobalName(namespace.errorClass.name, "binding error class");
+      if (globals.has(namespace.errorClass.name)) {
+        throw new TypeError(
+          `Code binding error class collides with a namespace: ${namespace.errorClass.name}`,
+        );
+      }
       if (!namespace.errorClass.memberNameProperty) {
         throw new TypeError("Binding error memberNameProperty must not be empty");
       }
@@ -278,6 +293,9 @@ function compileBindings(bindings: readonly CodeBindingNamespace[]): {
     const trie: BindingPathNode = { children: new Map(), terminal: false };
     const members: BootstrapMember[] = [];
     for (const member of namespace.members) {
+      if (typeof member.invoke !== "function") {
+        throw new TypeError(`Code binding below ${namespace.global} must be callable`);
+      }
       validateBindingPath(member.path, namespace.global, trie);
       const id = `binding-${++sequence}`;
       functions.push({ id, invoke: member.invoke });
@@ -421,6 +439,7 @@ function wrapProgram(program: string): string {
   const SetConstructor = Set;
   const setAdd = Set.prototype.add;
   const setHas = Set.prototype.has;
+  const TypeErrorConstructor = TypeError;
   const value = await (async () => {
     "use strict";
 ${program}
@@ -433,15 +452,15 @@ ${program}
     if (current === null || typeof current === "string" || typeof current === "boolean") continue;
     if (typeof current === "number") {
       if (!numberIsFinite(current)) {
-        throw new TypeError("${INVALID_OUTPUT_MARKER} program result must contain finite numbers");
+        throw new TypeErrorConstructor("${INVALID_OUTPUT_MARKER} program result must contain finite numbers");
       }
       continue;
     }
     if (typeof current !== "object") {
-      throw new TypeError("${INVALID_OUTPUT_MARKER} program result must be lossless JSON");
+      throw new TypeErrorConstructor("${INVALID_OUTPUT_MARKER} program result must be lossless JSON");
     }
     if (reflectApply(setHas, seen, [current])) {
-      throw new TypeError("${INVALID_OUTPUT_MARKER} program result must not contain cycles");
+      throw new TypeErrorConstructor("${INVALID_OUTPUT_MARKER} program result must not contain cycles");
     }
     reflectApply(setAdd, seen, [current]);
     if (arrayIsArray(current)) {
@@ -450,7 +469,7 @@ ${program}
     }
     const prototype = getPrototypeOf(current);
     if (prototype !== objectPrototype && prototype !== null) {
-      throw new TypeError("${INVALID_OUTPUT_MARKER} program result must contain only JSON objects");
+      throw new TypeErrorConstructor("${INVALID_OUTPUT_MARKER} program result must contain only JSON objects");
     }
     for (const item of objectValues(current)) reflectApply(arrayPush, work, [item]);
   }

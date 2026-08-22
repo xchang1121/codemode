@@ -261,7 +261,8 @@ the gateway/application so no new observations enter, then flushes autosave.
 
 | Future change | Intended edit surface | Layers that should remain untouched |
 | --- | --- | --- |
-| Add a Python, process or container backend | Implement `CodeRuntime` and choose it in composition | MCP gateway, service, registry, learner |
+| Add a process or container JavaScript backend | Implement `CodeRuntime` and choose it in composition | MCP gateway, service, registry, learner |
+| Add another source language | Implement `CodeRuntime`, add its SDK/schema flavor, then choose it in composition | MCP transport, registry, learner |
 | Change QuickJS/WASM limits or bootstrap | `QuickJsCodeRuntime` | protocol, learning, MCP transport |
 | Change tool concurrency or subcall policy | `ToolScopeCodeExecutor` / `ToolRegistry` | runtime substrate, gateway, hints |
 | Replace PPM/trie learning | Implement `FusionAdvisorPort` or change `FusionAdvisor` | gateway, service, runtime |
