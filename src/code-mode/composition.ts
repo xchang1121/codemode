@@ -1,7 +1,6 @@
 import type { CodeExecutor } from "../execution/types.js";
 import {
   FusionAdvisor,
-  type HintDelivery,
 } from "../hints/fusion-advisor.js";
 import { FusionLearner } from "../learning/fusion-learner.js";
 import type { ToolRegistry } from "../tools/tool-registry.js";
@@ -9,8 +8,9 @@ import {
   CodeModeService,
   type CodeModeApplicationPort,
 } from "./service.js";
+import type { HintDelivery } from "./ports.js";
 
-export type { HintDelivery } from "../hints/fusion-advisor.js";
+export type { HintDelivery } from "./ports.js";
 
 export interface DefaultCodeModeApplicationOptions {
   readonly registry: ToolRegistry;

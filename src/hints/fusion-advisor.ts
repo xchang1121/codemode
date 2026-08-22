@@ -1,4 +1,8 @@
 import { CODE_MODE_META_KEY } from "../code-mode/contract.js";
+import type {
+  FusionAdvisorPort,
+  HintDelivery,
+} from "../code-mode/ports.js";
 import { stableStringify } from "../core/stable.js";
 import { FusionLearner } from "../learning/fusion-learner.js";
 import type { FusionPath, ToolObservation } from "../learning/types.js";
@@ -10,17 +14,7 @@ import {
   type RenderedFusionHint,
 } from "./fusion-hints.js";
 
-export type HintDelivery = "content" | "meta" | "both" | "off";
-
-/** Narrow port consumed by Code Mode orchestration; no learning internals leak through it. */
-export interface FusionAdvisorPort {
-  commonHints(task: string, limit: number): readonly RenderedFusionHint[];
-  suggestHints(sessionId: string, task: string, limit: number): readonly RenderedFusionHint[];
-  activeHints(sessionId: string): readonly RenderedFusionHint[];
-  attachHints(result: ToolResult, sessionId: string): ToolResult;
-  onHintsChanged(listener: () => void): () => void;
-  close(): void;
-}
+export type { FusionAdvisorPort, HintDelivery } from "../code-mode/ports.js";
 
 export interface FusionAdvisorOptions {
   readonly registry: ToolRegistry;

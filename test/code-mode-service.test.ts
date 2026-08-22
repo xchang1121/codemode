@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { CodeModeService } from "../src/code-mode/service.js";
+import type { FusionAdvisorPort } from "../src/code-mode/ports.js";
 import type { CodeExecutionRequest } from "../src/execution/types.js";
-import type { FusionAdvisorPort } from "../src/hints/fusion-advisor.js";
 import type { RenderedFusionHint } from "../src/hints/fusion-hints.js";
 import { InMemoryToolProvider } from "../src/tools/in-memory-provider.js";
 import { ToolRegistry } from "../src/tools/tool-registry.js";

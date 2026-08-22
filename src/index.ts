@@ -70,6 +70,11 @@ export {
   type CodeModeCallRequest,
   type CodeModeServiceOptions,
 } from "./code-mode/service.js";
+export type {
+  CodeModeToolRegistryPort,
+  FusionAdvisorPort,
+  HintDelivery,
+} from "./code-mode/ports.js";
 export {
   createDefaultCodeModeApplication,
   type DefaultCodeModeApplication,
@@ -78,7 +83,6 @@ export {
 export {
   CodeModeGateway,
   type CodeModeGatewayOptions,
-  type HintDelivery,
 } from "./gateway/code-mode-gateway.js";
 export {
   fusionHintText,
@@ -89,7 +93,6 @@ export {
 export {
   FusionAdvisor,
   type FusionAdvisorOptions,
-  type FusionAdvisorPort,
 } from "./hints/fusion-advisor.js";
 export { QuickJsCodeExecutor } from "./execution/quickjs-executor.js";
 export {

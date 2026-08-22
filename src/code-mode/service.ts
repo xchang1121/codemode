@@ -9,12 +9,14 @@ import {
   type CodeModeSuggestInput,
 } from "./contract.js";
 import type { CodeExecutor } from "../execution/types.js";
-import type { FusionAdvisorPort } from "../hints/fusion-advisor.js";
 import {
   renderToolDeclaration,
   renderToolSdk,
 } from "../tools/schema-to-typescript.js";
-import type { ToolRegistry } from "../tools/tool-registry.js";
+import type {
+  CodeModeToolRegistryPort,
+  FusionAdvisorPort,
+} from "./ports.js";
 
 export interface CodeModeCallRequest {
   readonly name: string;
@@ -33,7 +35,7 @@ export interface CodeModeApplicationPort {
 }
 
 export interface CodeModeServiceOptions {
-  readonly registry: ToolRegistry;
+  readonly registry: CodeModeToolRegistryPort;
   readonly executor: CodeExecutor;
   readonly advisor: FusionAdvisorPort;
   readonly exposeDirectTools?: boolean;
@@ -46,7 +48,7 @@ export interface CodeModeServiceOptions {
  * shaping, while execution and learning remain replaceable ports.
  */
 export class CodeModeService implements CodeModeApplicationPort {
-  private readonly registry: ToolRegistry;
+  private readonly registry: CodeModeToolRegistryPort;
   private readonly executor: CodeExecutor;
   private readonly advisor: FusionAdvisorPort;
   private readonly exposeDirectTools: boolean;
