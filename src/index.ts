@@ -75,6 +75,28 @@ export {
 } from "./hints/fusion-hints.js";
 export { QuickJsCodeExecutor } from "./execution/quickjs-executor.js";
 export {
+  QuickJsCodeRuntime,
+  type QuickJsRuntimeOptions,
+} from "./execution/quickjs-runtime.js";
+export {
+  ToolScopeCodeExecutor,
+  type CodeRuntimeFactory,
+} from "./execution/tool-scope-executor.js";
+export {
+  snapshotCodeJson,
+  type CodeBindingCallContext,
+  type CodeBindingErrorClass,
+  type CodeBindingFunction,
+  type CodeBindingMember,
+  type CodeBindingNamespace,
+  type CodeJsonValue,
+  type CodeRunFailure,
+  type CodeRunFailureKind,
+  type CodeRunRequest,
+  type CodeRunResult,
+  type CodeRuntime,
+} from "./execution/code-runtime.js";
+export {
   DEFAULT_CODE_EXECUTION_LIMITS,
   type CodeExecutionLimits,
   type CodeExecutionRequest,

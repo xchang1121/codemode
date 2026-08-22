@@ -124,7 +124,7 @@ const TOOL_DEFINITIONS: readonly Tool[] = [
       "Execute the body of one async JavaScript function in an isolated QuickJS/WASM sandbox.",
       "Call tools as await tools[namespace][name](args); each call resolves to that tool's canonical JSON result.",
       "Sequence dependent work with await and use Promise.all for independent work.",
-      "Only tools named in allowed_tools exist inside the program, and a failed subcall rejects inside it.",
+      "Only tools named in allowed_tools exist inside the program; a failed subcall rejects with ToolCallError, whose toolName identifies the binding.",
       "Only what the program prints or returns becomes outer output; intermediate values stay inside the run.",
       "No filesystem, process, environment or direct network APIs are available.",
       "Call codemode_search/codemode_describe first if exact tool schemas are not known.",

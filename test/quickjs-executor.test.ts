@@ -76,6 +76,15 @@ describe("QuickJsCodeExecutor", () => {
             }
           },
         },
+        {
+          definition: {
+            name: "fail",
+            inputSchema: { type: "object", additionalProperties: false },
+          },
+          handler: () => {
+            throw new Error("provider failed");
+          },
+        },
       ]),
     );
     executor = new QuickJsCodeExecutor(registry);
@@ -131,6 +140,32 @@ describe("QuickJsCodeExecutor", () => {
         code: "return tools.demo.double({ value: 2 });",
       }),
     ).rejects.toBeInstanceOf(CodeExecutionError);
+  });
+
+  test("exposes an allowed subcall failure as ToolCallError inside the program", async () => {
+    const result = await executor.execute({
+      sessionId: "failure",
+      allowedTools: ["demo::fail"],
+      code: `
+        try {
+          await tools.demo.fail({});
+        } catch (error) {
+          return {
+            typed: error instanceof ToolCallError,
+            name: error.name,
+            toolName: error.toolName,
+            message: error.message,
+          };
+        }
+      `,
+    });
+
+    expect(result.value).toEqual({
+      typed: true,
+      name: "ToolCallError",
+      toolName: "tools.demo.fail",
+      message: "Error: provider failed",
+    });
   });
 
   test("interrupts infinite guest loops", async () => {
