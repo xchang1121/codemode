@@ -17,23 +17,20 @@ import {
   type CodeModeSearchInput,
   type CodeModeSuggestInput,
 } from "../code-mode/contract.js";
-import { stableStringify } from "../core/stable.js";
 import type { CodeExecutor } from "../execution/types.js";
 import {
-  fusionHintText,
-  renderFusionHints,
-  type RenderedFusionHint,
-} from "../hints/fusion-hints.js";
+  FusionAdvisor,
+  type FusionAdvisorPort,
+  type HintDelivery,
+} from "../hints/fusion-advisor.js";
 import { FusionLearner } from "../learning/fusion-learner.js";
-import type { FusionPath, ToolObservation } from "../learning/types.js";
 import {
   renderToolDeclaration,
   renderToolSdk,
 } from "../tools/schema-to-typescript.js";
 import type { ToolRegistry } from "../tools/tool-registry.js";
-import type { ToolInvocationTrace, ToolResult } from "../tools/types.js";
 
-export type HintDelivery = "content" | "meta" | "both" | "off";
+export type { HintDelivery } from "../hints/fusion-advisor.js";
 
 export interface CodeModeGatewayOptions {
   readonly registry: ToolRegistry;
@@ -48,34 +45,33 @@ export interface CodeModeGatewayOptions {
   readonly onLearnerChanged?: (learner: FusionLearner) => void;
 }
 
-interface BufferedBatch {
-  readonly expected: number;
-  readonly traces: Map<number, ToolInvocationTrace>;
-  readonly timer: ReturnType<typeof setTimeout>;
-}
-
 export class CodeModeGateway {
   readonly server: Server;
   readonly learner: FusionLearner;
   private readonly registry: ToolRegistry;
   private readonly executor: CodeExecutor;
   private readonly exposeDirectTools: boolean;
-  private readonly hintDelivery: HintDelivery;
-  private readonly maxActiveHints: number;
-  private readonly onLearnerChanged: ((learner: FusionLearner) => void) | undefined;
-  private readonly batches = new Map<string, BufferedBatch>();
-  private readonly removeListener: () => void;
-  private lastHintSignature = "";
+  private readonly advisor: FusionAdvisorPort;
+  private readonly removeHintsListener: () => void;
   private closed = false;
 
   constructor(options: CodeModeGatewayOptions) {
     this.registry = options.registry;
     this.executor = options.executor;
-    this.learner = options.learner ?? new FusionLearner();
     this.exposeDirectTools = options.exposeDirectTools ?? true;
-    this.hintDelivery = options.hintDelivery ?? "both";
-    this.maxActiveHints = Math.max(0, Math.floor(options.maxActiveHints ?? 2));
-    this.onLearnerChanged = options.onLearnerChanged;
+    const advisor = new FusionAdvisor({
+      registry: options.registry,
+      ...(options.learner ? { learner: options.learner } : {}),
+      ...(options.hintDelivery ? { hintDelivery: options.hintDelivery } : {}),
+      ...(options.maxActiveHints !== undefined
+        ? { maxActiveHints: options.maxActiveHints }
+        : {}),
+      ...(options.onLearnerChanged
+        ? { onLearnerChanged: options.onLearnerChanged }
+        : {}),
+    });
+    this.advisor = advisor;
+    this.learner = advisor.learner;
     this.server = new Server(
       {
         name: options.name ?? "codemode-gateway",
@@ -114,13 +110,14 @@ export class CodeModeGateway {
           source: "direct",
           signal: extra.signal,
         });
-        return this.attachHints(result, this.activeHints(sessionId));
+        return this.advisor.attachHints(result, sessionId);
       } catch (error) {
         return errorResult(error);
       }
     });
-    this.lastHintSignature = this.currentHintSignature();
-    this.removeListener = this.registry.onInvocation((trace) => this.observeTrace(trace));
+    this.removeHintsListener = this.advisor.onHintsChanged(() => {
+      if (this.server.transport) void this.server.sendToolListChanged().catch(() => undefined);
+    });
   }
 
   async connect(transport: Transport): Promise<void> {
@@ -130,11 +127,7 @@ export class CodeModeGateway {
   listTools(): readonly Tool[] {
     const tools = codeModeToolDefinitions();
     if (!this.exposeDirectTools) return tools;
-    const common = renderFusionHints(
-      this.learner.commonPaths(8, this.registry.schemaHashes()),
-      this.registry,
-      8,
-    );
+    const common = this.advisor.commonHints("", 8);
     for (const registered of this.registry.list()) {
       const related = common
         .filter((hint) => hint.tools.includes(`${registered.namespace}.${registered.originalName}`))
@@ -162,19 +155,15 @@ export class CodeModeGateway {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    this.removeListener();
-    for (const batch of this.batches.values()) clearTimeout(batch.timer);
-    this.batches.clear();
+    this.removeHintsListener();
+    this.advisor.close();
     await Promise.allSettled([this.server.close(), this.registry.close()]);
   }
 
   private search(input: CodeModeSearchInput): CallToolResult {
     const { query, limit } = input;
     const tools = this.registry.search(query, limit);
-    const pathHints = this.filterHints(
-      this.learner.commonPaths(limit, this.registry.schemaHashes()),
-      query,
-    );
+    const pathHints = this.advisor.commonHints(query, limit);
     const structuredContent = {
       tools: tools.map((tool) => ({
         id: tool.id,
@@ -211,12 +200,7 @@ export class CodeModeGateway {
     sessionId: string,
   ): CallToolResult {
     const { task, limit } = input;
-    const schemaHashes = this.registry.schemaHashes();
-    const sessionPaths = this.learner.predictPaths(sessionId, schemaHashes);
-    const paths = sessionPaths.length
-      ? sessionPaths
-      : this.learner.commonPaths(limit * 2, schemaHashes);
-    const hints = this.filterHints(paths, task).slice(0, limit);
+    const hints = this.advisor.suggestHints(sessionId, task, limit);
     return jsonResult({ hints });
   }
 
@@ -239,126 +223,8 @@ export class CodeModeGateway {
       toolCalls: result.toolCalls,
       durationMs: result.durationMs,
     };
-    return this.attachHints(jsonResult(structuredContent), this.activeHints(sessionId));
+    return this.advisor.attachHints(jsonResult(structuredContent), sessionId);
   }
-
-  private observeTrace(trace: ToolInvocationTrace): void {
-    const batchId = trace.context.batchId;
-    const batchSize = trace.context.batchSize;
-    const batchIndex = trace.context.batchIndex;
-    if (!batchId || batchSize === undefined || batchIndex === undefined || batchSize <= 1) {
-      this.observeTraces([trace]);
-      return;
-    }
-    let batch = this.batches.get(batchId);
-    if (!batch) {
-      const timer = setTimeout(() => this.flushBatch(batchId), 1_000);
-      timer.unref?.();
-      batch = { expected: batchSize, traces: new Map(), timer };
-      this.batches.set(batchId, batch);
-    }
-    batch.traces.set(batchIndex, trace);
-    if (batch.traces.size >= batch.expected) this.flushBatch(batchId);
-  }
-
-  private flushBatch(batchId: string): void {
-    const batch = this.batches.get(batchId);
-    if (!batch) return;
-    clearTimeout(batch.timer);
-    this.batches.delete(batchId);
-    this.observeTraces([...batch.traces.entries()].sort(([left], [right]) => left - right).map(([, trace]) => trace));
-  }
-
-  private observeTraces(traces: readonly ToolInvocationTrace[]): void {
-    const observations = traces.map(traceObservation);
-    if (observations.length > 1) this.learner.observeBatch(observations);
-    else if (observations[0]) this.learner.observe(observations[0]);
-    try {
-      this.onLearnerChanged?.(this.learner);
-    } catch {
-      // Persistence/telemetry hooks must not change authoritative tool behavior.
-    }
-    this.notifyHintChanges();
-  }
-
-  private notifyHintChanges(): void {
-    const signature = this.currentHintSignature();
-    if (signature === this.lastHintSignature) return;
-    this.lastHintSignature = signature;
-    if (this.server.transport) void this.server.sendToolListChanged().catch(() => undefined);
-  }
-
-  private currentHintSignature(): string {
-    return stableStringify(
-      this.learner.commonPaths(8, this.registry.schemaHashes()).map((path) => ({
-        tools: path.tools,
-        patternIds: path.steps.map((step) => step.patternId),
-        probability: Math.round(path.probability * 100),
-        dataflowEdges: path.dataflowEdges,
-      })),
-    );
-  }
-
-  private activeHints(sessionId: string): readonly RenderedFusionHint[] {
-    if (this.hintDelivery === "off" || this.maxActiveHints === 0) return [];
-    return renderFusionHints(
-      this.learner.predictPaths(sessionId, this.registry.schemaHashes()),
-      this.registry,
-      this.maxActiveHints,
-    );
-  }
-
-  private filterHints(paths: readonly FusionPath[], task: string): readonly RenderedFusionHint[] {
-    const hints = renderFusionHints(paths, this.registry, paths.length);
-    const terms = task.toLowerCase().split(/[^\p{L}\p{N}_-]+/u).filter(Boolean);
-    if (!terms.length) return hints;
-    const matched = hints.filter((hint) => {
-      const text = `${hint.summary} ${hint.code}`.toLowerCase();
-      return terms.some((term) => text.includes(term));
-    });
-    return matched.length ? matched : hints;
-  }
-
-  private attachHints(result: ToolResult, hints: readonly RenderedFusionHint[]): CallToolResult {
-    if (!hints.length || this.hintDelivery === "off") return result;
-    const content = [...result.content];
-    if (this.hintDelivery === "content" || this.hintDelivery === "both") {
-      content.push({
-        type: "text",
-        text: fusionHintText(hints),
-        annotations: { audience: ["assistant"], priority: 0.25 },
-      });
-    }
-    return {
-      ...result,
-      content,
-      ...(this.hintDelivery === "meta" || this.hintDelivery === "both"
-        ? {
-            _meta: {
-              ...result._meta,
-              [CODE_MODE_META_KEY]: { fusionHints: hints },
-            },
-          }
-        : {}),
-    };
-  }
-}
-
-function traceObservation(trace: ToolInvocationTrace): ToolObservation {
-  return {
-    sessionId: trace.context.sessionId,
-    ...(trace.context.batchId ? { turnId: trace.context.batchId } : {}),
-    ...(trace.context.callId ? { callId: trace.context.callId } : {}),
-    tool: trace.tool.id,
-    schemaHash: trace.tool.schemaHash,
-    input: trace.args,
-    ...(trace.result?.structuredContent !== undefined
-      ? { output: trace.result.structuredContent }
-      : {}),
-    outcome: trace.error || trace.result?.isError ? "error" : "success",
-    durationMs: trace.durationMs,
-    timestampMs: trace.startedAtMs,
-  };
 }
 
 function jsonResult(structuredContent: Record<string, unknown>): CallToolResult {

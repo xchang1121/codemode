@@ -73,6 +73,11 @@ export {
   renderFusionPathCode,
   type RenderedFusionHint,
 } from "./hints/fusion-hints.js";
+export {
+  FusionAdvisor,
+  type FusionAdvisorOptions,
+  type FusionAdvisorPort,
+} from "./hints/fusion-advisor.js";
 export { QuickJsCodeExecutor } from "./execution/quickjs-executor.js";
 export {
   QuickJsCodeRuntime,
