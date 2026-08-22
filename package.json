@@ -10,12 +10,17 @@
   },
   "files": [
     "dist",
+    "examples",
+    "codemode.config.schema.json",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"
   ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "codemode": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -31,8 +36,10 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "npm run typecheck && npm run test",
+    "start": "node ./dist/cli.js",
+    "check": "npm run typecheck && npm run test && npm run build && npm run test:e2e",
     "test": "vitest run",
+    "test:e2e": "node ./scripts/smoke-cli.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

@@ -122,6 +122,35 @@ describe("FusionLearner", () => {
       expect.objectContaining({ tool: "get", input: { id: "C" } }),
     );
   });
+
+  test("suppresses persisted paths when an upstream target schema changed", () => {
+    const learner = new FusionLearner();
+    for (const [sessionId, id] of [["one", "A"], ["two", "B"]] as const) {
+      learner.observe({
+        sessionId,
+        tool: "search",
+        schemaHash: "search-v1",
+        input: {},
+        output: { items: [{ id }] },
+        outcome: "success",
+      });
+      learner.observe({
+        sessionId,
+        tool: "get",
+        schemaHash: "get-v1",
+        input: { id },
+        outcome: "success",
+      });
+      learner.finishSession(sessionId);
+    }
+
+    expect(
+      learner.commonPaths(8, { search: "search-v1", get: "get-v1" }),
+    ).not.toHaveLength(0);
+    expect(
+      learner.commonPaths(8, { search: "search-v1", get: "get-v2" }),
+    ).toHaveLength(0);
+  });
 });
 
 function trainSearchGet(learner: FusionLearner, sessionId: string, id: string): void {

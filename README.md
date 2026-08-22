@@ -28,9 +28,8 @@ codemode gateway
 
 The repository currently includes the framework-neutral learner, namespaced
 aggregation of stdio/HTTP MCP servers, typed tool discovery, a QuickJS/WASM
-sandbox, direct passthrough tools, and proactive learned fusion hints. A
-configuration-driven CLI and durable learner state are the next implementation
-stage.
+sandbox, direct passthrough tools, proactive learned fusion hints, a
+configuration-driven stdio CLI, and durable learner state.
 
 ```sh
 npm install --ignore-scripts

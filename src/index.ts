@@ -103,3 +103,31 @@ export type {
   ToolProviderCallContext,
   ToolResult,
 } from "./tools/types.js";
+export {
+  CodeModeConfigError,
+  CodeModeConfigSchema,
+  DEFAULT_CONFIG_FILE,
+  expandEnvironment,
+  loadCodeModeConfig,
+  resolveCodeModeConfig,
+  type ResolveConfigOptions,
+  type ResolvedCodeModeConfig,
+  type ResolvedGatewayConfig,
+  type ResolvedMcpServerConfig,
+  type ResolvedStateConfig,
+} from "./config.js";
+export {
+  FusionStateStore,
+  type FusionStateLoadResult,
+  type FusionStateStoreOptions,
+} from "./persistence/fusion-state-store.js";
+export {
+  FusionStateAutosave,
+  type FusionStateAutosaveOptions,
+} from "./persistence/fusion-state-autosave.js";
+export {
+  createCodeModeRuntime,
+  type CodeModeRuntime,
+  type CreateCodeModeRuntimeOptions,
+} from "./runtime.js";
+export { CODEMODE_VERSION } from "./version.js";

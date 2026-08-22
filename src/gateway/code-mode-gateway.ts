@@ -39,6 +39,8 @@ export interface CodeModeGatewayOptions {
   readonly maxActiveHints?: number;
   readonly name?: string;
   readonly version?: string;
+  /** Runs after authoritative observations update the learner. */
+  readonly onLearnerChanged?: (learner: FusionLearner) => void;
 }
 
 interface BufferedBatch {
@@ -55,6 +57,7 @@ export class CodeModeGateway {
   private readonly exposeDirectTools: boolean;
   private readonly hintDelivery: HintDelivery;
   private readonly maxActiveHints: number;
+  private readonly onLearnerChanged: ((learner: FusionLearner) => void) | undefined;
   private readonly batches = new Map<string, BufferedBatch>();
   private readonly removeListener: () => void;
   private lastHintSignature = "";
@@ -67,6 +70,7 @@ export class CodeModeGateway {
     this.exposeDirectTools = options.exposeDirectTools ?? true;
     this.hintDelivery = options.hintDelivery ?? "both";
     this.maxActiveHints = Math.max(0, Math.floor(options.maxActiveHints ?? 2));
+    this.onLearnerChanged = options.onLearnerChanged;
     this.server = new Server(
       {
         name: options.name ?? "codemode-gateway",
@@ -124,7 +128,11 @@ export class CodeModeGateway {
       executeTool(),
     ];
     if (!this.exposeDirectTools) return tools;
-    const common = renderFusionHints(this.learner.commonPaths(8), this.registry, 8);
+    const common = renderFusionHints(
+      this.learner.commonPaths(8, this.registry.schemaHashes()),
+      this.registry,
+      8,
+    );
     for (const registered of this.registry.list()) {
       const related = common
         .filter((hint) => hint.tools.includes(`${registered.namespace}.${registered.originalName}`))
@@ -162,7 +170,10 @@ export class CodeModeGateway {
     const query = typeof args.query === "string" ? args.query : "";
     const limit = numberArgument(args.limit, 12, 1, 50);
     const tools = this.registry.search(query, limit);
-    const pathHints = this.filterHints(this.learner.commonPaths(limit), query);
+    const pathHints = this.filterHints(
+      this.learner.commonPaths(limit, this.registry.schemaHashes()),
+      query,
+    );
     const structuredContent = {
       tools: tools.map((tool) => ({
         id: tool.id,
@@ -202,8 +213,11 @@ export class CodeModeGateway {
   ): CallToolResult {
     const task = typeof args.task === "string" ? args.task : "";
     const limit = numberArgument(args.limit, 5, 1, 20);
-    const sessionPaths = this.learner.predictPaths(sessionId);
-    const paths = sessionPaths.length ? sessionPaths : this.learner.commonPaths(limit * 2);
+    const schemaHashes = this.registry.schemaHashes();
+    const sessionPaths = this.learner.predictPaths(sessionId, schemaHashes);
+    const paths = sessionPaths.length
+      ? sessionPaths
+      : this.learner.commonPaths(limit * 2, schemaHashes);
     const hints = this.filterHints(paths, task).slice(0, limit);
     return jsonResult({ hints });
   }
@@ -265,12 +279,17 @@ export class CodeModeGateway {
     const observations = traces.map(traceObservation);
     if (observations.length > 1) this.learner.observeBatch(observations);
     else if (observations[0]) this.learner.observe(observations[0]);
+    try {
+      this.onLearnerChanged?.(this.learner);
+    } catch {
+      // Persistence/telemetry hooks must not change authoritative tool behavior.
+    }
     this.notifyHintChanges();
   }
 
   private notifyHintChanges(): void {
     const signature = stableStringify(
-      this.learner.commonPaths(8).map((path) => ({
+      this.learner.commonPaths(8, this.registry.schemaHashes()).map((path) => ({
         tools: path.tools,
         probability: Math.round(path.probability * 100),
       })),
@@ -283,7 +302,7 @@ export class CodeModeGateway {
   private activeHints(sessionId: string): readonly RenderedFusionHint[] {
     if (this.hintDelivery === "off" || this.maxActiveHints === 0) return [];
     return renderFusionHints(
-      this.learner.predictPaths(sessionId),
+      this.learner.predictPaths(sessionId, this.registry.schemaHashes()),
       this.registry,
       this.maxActiveHints,
     );

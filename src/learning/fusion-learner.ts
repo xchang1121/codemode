@@ -211,8 +211,11 @@ export class FusionLearner {
   }
 
   /** Build likely multi-step paths from the current session suffix. */
-  predictPaths(sessionId: string): readonly FusionPath[] {
-    const initial = this.predict(sessionId);
+  predictPaths(
+    sessionId: string,
+    schemaHashes: Readonly<Record<string, string>> = {},
+  ): readonly FusionPath[] {
+    const initial = this.predict(sessionId, schemaHashes);
     const frontiers: PathFrontier[] = initial.map((candidate) => {
       const pattern = this.patterns.get(candidate.patternId);
       const step = pattern
@@ -228,12 +231,16 @@ export class FusionLearner {
         visited: new Set([candidate.patternId]),
       };
     });
-    return this.expandPaths(frontiers);
+    return this.expandPaths(frontiers, schemaHashes);
   }
 
   /** Build reusable paths from all retained patterns, independent of a session. */
-  commonPaths(limit = this.settings.maxSuggestions): readonly FusionPath[] {
+  commonPaths(
+    limit = this.settings.maxSuggestions,
+    schemaHashes: Readonly<Record<string, string>> = {},
+  ): readonly FusionPath[] {
     const starts = [...this.patterns.values()]
+      .filter((pattern) => matchesCurrentSchema(pattern, schemaHashes))
       .sort(comparePatterns)
       .slice(0, Math.max(limit * 4, limit))
       .map((pattern): PathFrontier => {
@@ -249,7 +256,7 @@ export class FusionLearner {
           visited: new Set([pattern.id]),
         };
       });
-    return this.expandPaths(starts).slice(0, Math.max(0, Math.floor(limit)));
+    return this.expandPaths(starts, schemaHashes).slice(0, Math.max(0, Math.floor(limit)));
   }
 
   learnedPatterns(): readonly LearnedToolPattern[] {
@@ -342,7 +349,10 @@ export class FusionLearner {
     this.indexDirty = true;
   }
 
-  private expandPaths(initial: readonly PathFrontier[]): readonly FusionPath[] {
+  private expandPaths(
+    initial: readonly PathFrontier[],
+    schemaHashes: Readonly<Record<string, string>>,
+  ): readonly FusionPath[] {
     const completed: PathFrontier[] = [];
     let frontier = [...initial];
     for (let depth = 0; depth < this.settings.maxPathDepth && frontier.length; depth++) {
@@ -351,6 +361,7 @@ export class FusionLearner {
         completed.push(item);
         for (const pattern of this.patternsMatchingToolSuffix(item.tools)) {
           if (item.visited.has(pattern.id)) continue;
+          if (!matchesCurrentSchema(pattern, schemaHashes)) continue;
           const step = patternToStep(pattern, patternReliability(pattern));
           // A longer path is only a stronger fusion candidate when the new
           // step consumes an earlier structured result. Sequential calls with
@@ -516,6 +527,16 @@ function outputDependencyCount(step: FusionPathStep): number {
 function patternReliability(pattern: LearnedToolPattern): number {
   const support = pattern.occurrences / (pattern.occurrences + 1);
   return clampProbability(support * pattern.replayProbability);
+}
+
+function matchesCurrentSchema(
+  pattern: LearnedToolPattern,
+  schemaHashes: Readonly<Record<string, string>>,
+): boolean {
+  const current = schemaHashes[pattern.targetTool];
+  return current === undefined ||
+    pattern.targetSchemaHash === undefined ||
+    current === pattern.targetSchemaHash;
 }
 
 function comparePatterns(left: LearnedToolPattern, right: LearnedToolPattern): number {
