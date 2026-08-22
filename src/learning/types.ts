@@ -81,6 +81,36 @@ export interface LearnedToolPattern {
   readonly lastSeenSequence: number;
 }
 
+/**
+ * Value-minimized evidence for one target-input leaf. Candidate and constant
+ * values are represented only by truncated SHA-256 fingerprints until a rule has met
+ * the configured support threshold.
+ */
+export interface BindingPathEvidence {
+  readonly candidateHashes: readonly string[];
+  readonly constantHash?: string;
+  readonly secret?: true;
+}
+
+/** One successful observation with all raw input/output values removed. */
+export interface BindingObservationEvidence {
+  readonly sessionHash: string;
+  readonly durationMs: number;
+  readonly sequence: number;
+  readonly paths: Readonly<Record<string, BindingPathEvidence>>;
+}
+
+/** Persistable evidence pool for a context/target pair. */
+export interface FusionPatternPoolSnapshot {
+  readonly key: string;
+  readonly context: readonly string[];
+  readonly contextTools: readonly string[];
+  readonly targetTool: string;
+  readonly targetSchemaHash?: string;
+  readonly observations: readonly BindingObservationEvidence[];
+  readonly patternId?: string;
+}
+
 export interface FusionDependency {
   readonly targetPath: ValuePath;
   readonly sources: readonly BindingSource[];
@@ -120,9 +150,20 @@ export interface FusionPath {
   readonly dataflowEdges: number;
 }
 
-export interface FusionLearnerSnapshot {
+export interface FusionLearnerSnapshotV1 {
   readonly version: 1;
   readonly sequence: number;
   readonly ppm: readonly PpmCountTrieRow[];
   readonly patterns: readonly LearnedToolPattern[];
 }
+
+export interface FusionLearnerSnapshotV2 {
+  readonly version: 2;
+  readonly sequence: number;
+  readonly ppm: readonly PpmCountTrieRow[];
+  readonly patterns: readonly LearnedToolPattern[];
+  /** Bounded, value-minimized evidence; never complete tool-call traces. */
+  readonly pools: readonly FusionPatternPoolSnapshot[];
+}
+
+export type FusionLearnerSnapshot = FusionLearnerSnapshotV1 | FusionLearnerSnapshotV2;

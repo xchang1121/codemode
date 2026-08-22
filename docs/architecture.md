@@ -102,11 +102,17 @@ MCP has no universal conversation identifier. The gateway uses, in order:
 
 Structural binding replay is the main false-positive defense across task
 boundaries: ordinary adjacency without an earlier-result-to-later-input edge is
-not emitted as a fusion path.
+not emitted as a fusion path. Bounded causal subsequences can skip unrelated
+intervening calls, but only a replayed structured-output dependency allows such
+a projected context to enter the learner.
 
 ## Persistence lifecycle
 
 The CLI loads one compact learner envelope before constructing the gateway.
+Version-2 learner snapshots include value-minimized candidate evidence, so two
+short-lived clients can jointly meet a two-observation threshold without
+persisting either call's raw values. Version-1 pattern-only snapshots remain
+readable.
 Observation callbacks mark state dirty. Debounced saves serialize writes, use a
 unique sibling temporary file, and replace the destination only after a full
 write. Shutdown first closes the gateway to stop new observations, then flushes

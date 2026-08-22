@@ -35,7 +35,10 @@
   "learning": {
     "minimumOccurrences": 2,
     "maxOrder": 4,
-    "maxPathDepth": 4
+    "maxPathDepth": 4,
+    "persistBindingEvidence": true,
+    "learnCausalSubsequences": true,
+    "indexToolSuffixes": true
   },
   "state": {
     "path": ".codemode/learned-state.json",

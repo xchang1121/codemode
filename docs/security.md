@@ -88,11 +88,21 @@ be retained by the calling agent.
 
 ## Learner state
 
-State files contain compact counts and learned bindings, not full traces or raw
-tool outputs. A stable non-secret input constant can be persisted; commands,
-paths, queries, text and similar provenance-sensitive strings require the
-configured higher support threshold. Paths and tool names can also reveal
-workflow structure.
+State files contain compact counts, learned bindings and redacted pre-pattern
+evidence, not full traces or raw tool outputs. Before promotion, candidate
+bindings and constants are represented by truncated SHA-256 fingerprints;
+one-shot template fragments and values remain in memory only. A stable
+non-secret input constant can be persisted after promotion; commands, paths,
+queries, text and similar provenance-sensitive strings require the configured
+higher support threshold. Fingerprints are data minimization, not encryption:
+low-entropy values may be guessable, and paths/tool names reveal workflow
+structure. Set `learning.persistBindingEvidence` to `false` to omit pre-pattern
+evidence while retaining promoted rules.
+
+Redacted pools also have a separate serialized byte budget (4 MiB by default).
+When the configured state envelope is smaller, the runtime caps evidence at
+half of `state.maxStateBytes` so PPM rows, promoted patterns and JSON overhead
+retain space.
 
 - Store state in an access-controlled application-data location.
 - Set `state.maxStateBytes` to a reasonable bound.

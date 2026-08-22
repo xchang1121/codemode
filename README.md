@@ -140,6 +140,11 @@ tool descriptions explicitly tell the model:
 3. put only those tools in `allowed_tools`; and
 4. use `await tools[namespace][name](args)` inside `codemode_execute`.
 
+Every learned hint includes both a readable `tools` sequence and canonical
+`allowedTools` stable IDs. Copy `allowedTools` exactly into
+`codemode_execute.allowed_tools`; display names such as `docs.search` are not
+execution identifiers.
+
 Learned hints reinforce that instruction in three places: direct tool results,
 assistant-visible content; result `_meta`; and refreshed tool descriptions
 through MCP `tools/list_changed` notifications.
@@ -177,6 +182,8 @@ a reusable fusion program.
 The learner also:
 
 - uses bounded suffix contexts and decay, so recent repeated behavior matters;
+- accumulates value-minimized evidence across short-lived MCP processes;
+- learns causal subsequences when unrelated calls occur between producer and consumer;
 - infers nested fields, stable templates and common path operations;
 - rejects credential-like argument paths from learned bindings;
 - invalidates a hint when an upstream target tool schema changes; and
@@ -186,7 +193,9 @@ Only real calls and structured results are training evidence. Model reasoning,
 generated code and presentation text are not treated as ground truth.
 
 For the full algorithm and its relationship to Pi's speculative-action branch,
-see [docs/learning.md](docs/learning.md).
+see [docs/learning.md](docs/learning.md). The reproducible feature and scale
+ablation is documented in [docs/learning-ablation.md](docs/learning-ablation.md)
+and runs with `npm run bench:learning`.
 
 ## Configuration
 
@@ -243,8 +252,10 @@ separate assistant-audience content item and/or `_meta`; it never changes
 `structuredContent` or claims to be an upstream result.
 
 Durable state does not contain complete tool-call traces or raw output values.
-It stores bounded PPM counts, structural source/target paths and learned
-patterns. A stable non-secret input constant can be retained; provenance-sensitive
+It stores bounded PPM counts, structural source/target paths, learned patterns,
+and pre-pattern candidate/value fingerprints with counts. Fingerprints improve
+cross-process sample efficiency but are data minimization, not encryption. A
+stable non-secret input constant can be retained after promotion; provenance-sensitive
 strings such as commands, paths, queries and text require the higher configured
 constant-support threshold. Treat the state file as application data, review its
 location, and disable persistence if that is not acceptable for the tool set.

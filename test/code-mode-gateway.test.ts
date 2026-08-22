@@ -99,6 +99,9 @@ describe("CodeModeGateway", () => {
   });
 
   test("exposes discovery, execution and namespaced direct tools", async () => {
+    expect(client.getInstructions()).toContain(
+      "copy a hint's allowedTools stable IDs exactly into codemode_execute.allowed_tools",
+    );
     const listed = await client.listTools();
     expect(listed.tools.map((tool) => tool.name)).toEqual([
       "codemode_search",
@@ -108,6 +111,9 @@ describe("CodeModeGateway", () => {
       "docs__get",
       "docs__search",
     ]);
+    expect(listed.tools.find((tool) => tool.name === "codemode_execute")?.description).toContain(
+      "allowed_tools",
+    );
 
     const searched = await call("codemode_search", { query: "documents" });
     expect(recordArray(searched.structuredContent, "tools")).toEqual(
@@ -131,7 +137,10 @@ describe("CodeModeGateway", () => {
     expect(thirdSearch.structuredContent).toEqual({ items: [{ id: "doc-gamma" }] });
     expect(
       thirdSearch.content.some(
-        (item) => item.type === "text" && item.text.includes("[Code Mode fusion hint]"),
+        (item) =>
+          item.type === "text" &&
+          item.text.includes("[Code Mode fusion hint]") &&
+          item.text.includes('allowed_tools: ["docs::search","docs::get"]'),
       ),
     ).toBe(true);
     expect(asRecord(thirdSearch._meta)?.["io.github.xchang1121/codemode"]).toEqual(
@@ -142,6 +151,7 @@ describe("CodeModeGateway", () => {
     const hints = recordArray(suggested.structuredContent, "hints");
     expect(hints[0]).toEqual(
       expect.objectContaining({
+        allowedTools: ["docs::search", "docs::get"],
         tools: ["docs.search", "docs.get"],
         dataflowEdges: 1,
         code: expect.stringContaining('tools["docs"]["get"]'),

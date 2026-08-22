@@ -6,11 +6,17 @@ export {
 } from "./learning/fusion-learner.js";
 export {
   applyBindingsPartial,
+  bindingEvidenceHasOutputDependency,
   bindingDependencies,
+  bindingFingerprint,
+  captureBindingEvidence,
   decodePath,
   encodePath,
   formatPath,
   inferStableBindings,
+  inferStableBindingsFromEvidence,
+  type BindingEvidenceCandidate,
+  type BindingEvidenceCapture,
   type BindingInferenceOptions,
   type BindingSample,
 } from "./learning/bindings.js";
@@ -21,10 +27,15 @@ export {
 } from "./learning/ppm-count-trie.js";
 export { SuffixPatternTrie } from "./learning/suffix-pattern-trie.js";
 export type {
+  BindingObservationEvidence,
+  BindingPathEvidence,
   BindingSource,
   FusionCandidate,
   FusionDependency,
   FusionLearnerSnapshot,
+  FusionLearnerSnapshotV1,
+  FusionLearnerSnapshotV2,
+  FusionPatternPoolSnapshot,
   FusionPath,
   FusionPathStep,
   LearnedBindingSet,

@@ -1,7 +1,10 @@
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { QuickJsCodeExecutor } from "./execution/quickjs-executor.js";
 import { CodeModeGateway } from "./gateway/code-mode-gateway.js";
-import { FusionLearner } from "./learning/fusion-learner.js";
+import {
+  FUSION_LEARNER_DEFAULTS,
+  FusionLearner,
+} from "./learning/fusion-learner.js";
 import { FusionStateAutosave } from "./persistence/fusion-state-autosave.js";
 import {
   FusionStateStore,
@@ -39,7 +42,22 @@ export async function createCodeModeRuntime(
     throw error;
   }
 
-  const learner = new FusionLearner(config.learning);
+  const configuredEvidenceBytes =
+    config.learning.maxPersistedEvidenceBytes ??
+    FUSION_LEARNER_DEFAULTS.maxPersistedEvidenceBytes;
+  const learner = new FusionLearner({
+    ...config.learning,
+    ...(config.state
+      ? {
+          // Leave at least half of the state envelope for promoted patterns,
+          // PPM rows and JSON overhead.
+          maxPersistedEvidenceBytes: Math.min(
+            configuredEvidenceBytes,
+            Math.max(1, Math.floor(config.state.maxStateBytes / 2)),
+          ),
+        }
+      : {}),
+  });
   let stateLoadResult: FusionStateLoadResult | undefined;
   let autosave: FusionStateAutosave | undefined;
   if (config.state) {

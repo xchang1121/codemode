@@ -43,12 +43,13 @@ budget.
 PPM answers “what probably follows?” It does not authorize or execute that
 tool.
 
-## Predictive suffix trie
+## Predictive suffix tries
 
-Learned concrete patterns are indexed separately by their context-token suffix.
-At prediction time, the trie returns pattern IDs for matching suffixes from the
-most specific retained context down to shorter fallbacks. This avoids scanning
-every pattern for each tool result.
+Learned concrete patterns are indexed twice: one trie uses complete event tokens
+for current-session prediction, and a second uses tool IDs for multi-step path
+expansion. Each trie returns matching pattern IDs from the most specific suffix
+down to shorter fallbacks. This avoids scanning every pattern after each result
+and also removes the former linear scan from every beam-expansion step.
 
 The tool schema hash is checked again before a candidate or common path is
 shown. A target schema change therefore suppresses stale persisted bindings.
@@ -67,6 +68,14 @@ into safe JSON paths. The learner tries to replay every target input leaf from:
 A binding survives only if it replays across the configured fraction of
 samples. Unbound target fields remain explicit `missing` paths in the generated
 skeleton; the model must fill them from the current task.
+
+Before a rule reaches support, each observation is reduced to target paths,
+candidate-binding truncated SHA-256 fingerprints, constant fingerprints, a hashed session
+identifier, duration and sequence. Raw inputs, raw outputs, constant values and
+one-shot template fragments are not stored in that evidence. When a later live
+sample supplies the same fingerprint, the learner can promote the current
+concrete binding without recovering an earlier value. Candidate lists and
+observations are bounded per pool.
 
 Provenance-sensitive constants such as commands, paths, queries and text use a
 higher support threshold than event bindings. Simple stable non-secret constants
@@ -96,6 +105,14 @@ return step2;
 
 ## Multi-step paths
 
+In addition to contiguous suffixes, the default learner examines every ordered
+subsequence within the bounded context window (all 15 non-empty subsets at the
+default order of four). A projected subsequence is retained only when the target
+actually consumes a prior structured output. This lets
+`search → telemetry → get` contribute to the reusable causal path
+`search → get`, while unrelated adjacency does not. Projection is capped at an
+eight-event window even when `maxOrder` is configured higher.
+
 The path frontier starts with current-session PPM candidates or reliable global
 patterns. It expands by matching each provisional tool suffix against retained
 patterns. An added step must introduce another earlier-output dependency; plain
@@ -111,6 +128,7 @@ After a direct call, the gateway asks the learner for paths matching that
 session's new suffix. Rendered hints include:
 
 - readable tool sequence and confidence;
+- canonical `allowedTools` IDs ready for `codemode_execute.allowed_tools`;
 - number of learned data-flow edges; and
 - an executable JavaScript skeleton with explicit missing fields.
 
@@ -123,13 +141,16 @@ speculative execution.
 Snapshots contain:
 
 - bounded PPM trie rows;
-- learned structural patterns; and
+- learned structural patterns;
+- bounded value-minimized evidence for rules below the promotion threshold; and
 - the monotonic sequence number.
 
-Session histories, sample pools and raw output values are intentionally absent.
-Stable non-secret constants that became bindings may still be present. Restore
-rebuilds the suffix index lazily and resumes PPM estimates without pretending
-that a previous process's conversation is still active.
+Session histories, complete samples and raw output values are intentionally
+absent. Stable non-secret constants that became bindings may still be present.
+Snapshot version 2 adds redacted evidence pools and restores version-1 snapshots
+without migration work. Restore rebuilds both suffix indexes lazily and resumes
+PPM estimates without pretending that a previous process's conversation is
+still active. Set `persistBindingEvidence: false` to retain only promoted rules.
 
 ## Relationship to Pi speculative-action
 
@@ -152,5 +173,12 @@ fusion paths. It does not pre-execute predicted tools and does not require Pi.
 | `minimumConstantSupport` | 4 | Session support required for provenance-sensitive constants. |
 | `decayHalfLifeEvents` | 2048 | Sequence-distance half-life for PPM counts. |
 | `maxPathDepth` | 4 | Maximum number of learned target steps to unfold. |
+| `maxEvidenceCandidatesPerPath` | 64 | Maximum candidate fingerprints retained per target leaf. |
+| `maxPersistedEvidenceBytes` | 4194304 | Serialized budget for redacted evidence pools. |
+| `persistBindingEvidence` | `true` | Carry pre-pattern evidence across process restarts. |
+| `learnCausalSubsequences` | `true` | Learn data flow across unrelated intervening calls. |
+| `indexToolSuffixes` | `true` | Use the tool-context trie for path expansion. |
 
-The full defaults are exported as `FUSION_LEARNER_DEFAULTS`.
+The full defaults are exported as `FUSION_LEARNER_DEFAULTS`. See the
+[learning ablation](learning-ablation.md) for the measured contribution of each
+feature.

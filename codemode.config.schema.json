@@ -64,7 +64,12 @@
         "maxSessionEvents": { "$ref": "#/$defs/positiveInteger" },
         "maxSuggestions": { "$ref": "#/$defs/positiveInteger" },
         "beamWidthPerTool": { "$ref": "#/$defs/positiveInteger" },
-        "maxPathDepth": { "$ref": "#/$defs/positiveInteger" }
+        "maxPathDepth": { "$ref": "#/$defs/positiveInteger" },
+        "maxEvidenceCandidatesPerPath": { "$ref": "#/$defs/positiveInteger" },
+        "maxPersistedEvidenceBytes": { "$ref": "#/$defs/positiveInteger" },
+        "persistBindingEvidence": { "type": "boolean", "default": true },
+        "learnCausalSubsequences": { "type": "boolean", "default": true },
+        "indexToolSuffixes": { "type": "boolean", "default": true }
       }
     },
     "state": {

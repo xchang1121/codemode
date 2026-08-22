@@ -8,6 +8,8 @@ import type {
 import type { ToolRegistry } from "../tools/tool-registry.js";
 
 export interface RenderedFusionHint {
+  /** Canonical stable IDs, ready to copy into codemode_execute.allowed_tools. */
+  readonly allowedTools: readonly string[];
   readonly tools: readonly string[];
   readonly probability: number;
   readonly dataflowEdges: number;
@@ -28,6 +30,7 @@ export function renderFusionHints(
   return paths.slice(0, Math.max(0, Math.floor(limit))).map((path) => {
     const tools = path.tools.map((tool) => displayTool(tool, registry));
     return {
+      allowedTools: [...new Set(path.tools)],
       tools,
       probability: path.probability,
       dataflowEdges: path.dataflowEdges,
@@ -93,10 +96,11 @@ export function fusionHintText(hints: readonly RenderedFusionHint[]): string {
   ];
   for (const [index, hint] of hints.entries()) {
     lines.push(`${index + 1}. ${hint.summary}`);
+    lines.push(`   allowed_tools: ${JSON.stringify(hint.allowedTools)}`);
     lines.push("```js", hint.code, "```");
   }
   lines.push(
-    "Use codemode_execute before issuing the separate calls when this path matches the current task.",
+    "When this path matches the task, copy allowed_tools exactly into codemode_execute and run the program before issuing separate calls.",
   );
   return lines.join("\n");
 }

@@ -81,7 +81,7 @@ export class CodeModeGateway {
         instructions: [
           "This server exposes ordinary tools plus Code Mode.",
           "Use codemode_search and codemode_describe to discover typed tools.",
-          "Use codemode_suggest to inspect learned multi-tool paths.",
+          "Use codemode_suggest to inspect learned multi-tool paths; copy a hint's allowedTools stable IDs exactly into codemode_execute.allowed_tools.",
           "Use codemode_execute for dependent calls, loops, branching, filtering or parallel calls.",
           "Every codemode_execute request must include an explicit allowed_tools list.",
         ].join(" "),
@@ -392,7 +392,7 @@ function suggestTool(): Tool {
   return {
     name: CODEMODE_SUGGEST,
     description:
-      "Show PPM + trie learned tool paths whose structured results can feed later tool arguments. Returns executable JavaScript skeletons.",
+      "Show PPM + trie learned tool paths whose structured results can feed later tool arguments. Each hint returns an executable JavaScript skeleton and canonical allowedTools IDs ready for codemode_execute.allowed_tools.",
     inputSchema: {
       type: "object",
       properties: {
@@ -425,7 +425,7 @@ function executeTool(): Tool {
           minItems: 1,
           maxItems: 10_000,
           uniqueItems: true,
-          description: "Explicit upstream tool IDs or gateway names available to the program",
+          description: "Explicit upstream stable IDs (prefer hint.allowedTools) or gateway names available to the program",
         },
         code: {
           type: "string",

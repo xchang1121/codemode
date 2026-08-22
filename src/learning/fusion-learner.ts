@@ -1,14 +1,19 @@
 import { stableHash, stableStringify } from "../core/stable.js";
 import {
   applyBindingsPartial,
+  bindingEvidenceHasOutputDependency,
   bindingDependencies,
-  inferStableBindings,
+  captureBindingEvidence,
+  inferStableBindingsFromEvidence,
+  type BindingEvidenceCapture,
 } from "./bindings.js";
 import { PpmCountTrie } from "./ppm-count-trie.js";
 import { SuffixPatternTrie } from "./suffix-pattern-trie.js";
 import type {
+  BindingObservationEvidence,
   FusionCandidate,
   FusionLearnerSnapshot,
+  FusionPatternPoolSnapshot,
   FusionPath,
   FusionPathStep,
   LearnedToolPattern,
@@ -29,6 +34,16 @@ export interface FusionLearnerSettings {
   readonly maxSuggestions: number;
   readonly beamWidthPerTool: number;
   readonly maxPathDepth: number;
+  /** Maximum structural candidates retained per target-input leaf. */
+  readonly maxEvidenceCandidatesPerPath: number;
+  /** Serialized byte budget for value-minimized evidence pools. */
+  readonly maxPersistedEvidenceBytes: number;
+  /** Persist value-minimized pre-pattern evidence across process restarts. */
+  readonly persistBindingEvidence: boolean;
+  /** Learn data-flow subsequences that skip unrelated intervening calls. */
+  readonly learnCausalSubsequences: boolean;
+  /** Use a second suffix trie while expanding learned multi-step paths. */
+  readonly indexToolSuffixes: boolean;
 }
 
 export const FUSION_LEARNER_DEFAULTS: FusionLearnerSettings = {
@@ -43,12 +58,12 @@ export const FUSION_LEARNER_DEFAULTS: FusionLearnerSettings = {
   maxSuggestions: 8,
   beamWidthPerTool: 2,
   maxPathDepth: 4,
+  maxEvidenceCandidatesPerPath: 64,
+  maxPersistedEvidenceBytes: 4 * 1024 * 1024,
+  persistBindingEvidence: true,
+  learnCausalSubsequences: true,
+  indexToolSuffixes: true,
 };
-
-interface PatternSample {
-  readonly context: readonly ToolEvent[];
-  readonly target: ToolEvent;
-}
 
 interface PatternPool {
   readonly key: string;
@@ -56,8 +71,13 @@ interface PatternPool {
   readonly contextTools: readonly string[];
   readonly targetTool: string;
   readonly targetSchemaHash?: string;
-  readonly samples: PatternSample[];
+  readonly observations: BindingObservationEvidence[];
   patternId?: string;
+}
+
+interface LearningContext {
+  readonly events: readonly ToolEvent[];
+  readonly projected: boolean;
 }
 
 interface PathFrontier {
@@ -84,6 +104,7 @@ export class FusionLearner {
   private readonly sessions = new Map<string, ToolEvent[]>();
   private ppm: PpmCountTrie;
   private patternTrie = new SuffixPatternTrie();
+  private toolPatternTrie = new SuffixPatternTrie();
   private indexDirty = false;
   private sequence = 0;
 
@@ -268,10 +289,11 @@ export class FusionLearner {
 
   snapshot(): FusionLearnerSnapshot {
     return {
-      version: 1,
+      version: 2,
       sequence: this.sequence,
       ppm: this.ppm.snapshot(this.settings.maxPatterns),
       patterns: this.learnedPatterns(),
+      pools: this.settings.persistBindingEvidence ? this.snapshotPools() : [],
     };
   }
 
@@ -281,12 +303,23 @@ export class FusionLearner {
     this.ppm = new PpmCountTrie(this.settings.maxOrder);
     this.ppm.restore(value.ppm);
     this.ppm.trim(this.settings.maxPatterns);
+    this.sessions.clear();
     this.patterns.clear();
     for (const pattern of value.patterns) {
       if (pattern.context.length > this.settings.maxOrder || !isLearnedPattern(pattern)) continue;
       this.patterns.set(pattern.id, clonePattern(pattern));
     }
     this.trimPatterns();
+    this.pools.clear();
+    if (value.version === 2 && this.settings.persistBindingEvidence) {
+      for (const item of value.pools) {
+        const pool = parsePatternPool(item, this.settings);
+        if (!pool) continue;
+        if (pool.patternId && !this.patterns.has(pool.patternId)) delete pool.patternId;
+        this.pools.set(pool.key, pool);
+      }
+      this.trimPools();
+    }
     this.indexDirty = true;
     return true;
   }
@@ -295,10 +328,19 @@ export class FusionLearner {
     // Failed calls remain useful PPM context, but they are not authoritative
     // examples of a reusable input/output program.
     if (target.outcome !== "success") return;
-    const maxLength = Math.min(this.settings.maxOrder, history.length);
-    for (let length = 1; length <= maxLength; length++) {
-      const contextEvents = history.slice(-length);
+    const observedPoolKeys = new Set<string>();
+    for (const learningContext of learningContexts(
+      history,
+      this.settings.maxOrder,
+      this.settings.learnCausalSubsequences,
+    )) {
+      const contextEvents = learningContext.events;
       if (contextEvents.some((event) => event.outcome !== "success")) continue;
+      const capture = captureBindingEvidence(
+        { context: contextEvents, target },
+        this.settings.maxEvidenceCandidatesPerPath,
+      );
+      if (learningContext.projected && !bindingEvidenceHasOutputDependency(capture)) continue;
       const context = contextEvents.map(eventToken);
       const contextTools = contextEvents.map((event) => event.tool);
       const key = stableHash({
@@ -306,24 +348,33 @@ export class FusionLearner {
         targetTool: target.tool,
         targetSchemaHash: target.schemaHash,
       });
+      if (observedPoolKeys.has(key)) continue;
+      observedPoolKeys.add(key);
       const pool = this.pools.get(key) ?? {
         key,
         context,
         contextTools,
         targetTool: target.tool,
         ...(target.schemaHash ? { targetSchemaHash: target.schemaHash } : {}),
-        samples: [],
+        observations: [],
       };
-      pool.samples.push({ context: contextEvents, target });
-      if (pool.samples.length > this.settings.maxSamplesPerPool) pool.samples.shift();
+      pool.observations.push(capture.evidence);
+      if (pool.observations.length > this.settings.maxSamplesPerPool) {
+        pool.observations.shift();
+      }
       this.pools.set(key, pool);
-      if (pool.samples.length >= this.settings.minimumOccurrences) this.rebuildPattern(pool);
+      if (pool.observations.length >= this.settings.minimumOccurrences) {
+        this.rebuildPattern(pool, capture);
+      }
     }
     this.trimPools();
   }
 
-  private rebuildPattern(pool: PatternPool): void {
-    const inference = inferStableBindings(pool.samples, {
+  private rebuildPattern(pool: PatternPool, current: BindingEvidenceCapture): void {
+    const knownBindings = pool.patternId
+      ? this.patterns.get(pool.patternId)?.bindings ?? {}
+      : {};
+    const inference = inferStableBindingsFromEvidence(pool.observations, current, knownBindings, {
       minimumReplayProbability: this.settings.minimumBindingReplayProbability,
       minimumConstantSupport: this.settings.minimumConstantSupport,
     });
@@ -336,8 +387,8 @@ export class FusionLearner {
     });
     if (pool.patternId && pool.patternId !== id) this.patterns.delete(pool.patternId);
     const averageDurationMs =
-      pool.samples.reduce((total, sample) => total + Math.max(0, sample.target.durationMs ?? 0), 0) /
-      pool.samples.length;
+      pool.observations.reduce((total, observation) => total + observation.durationMs, 0) /
+      pool.observations.length;
     const pattern: LearnedToolPattern = {
       id,
       context: [...pool.context],
@@ -346,10 +397,10 @@ export class FusionLearner {
       ...(pool.targetSchemaHash ? { targetSchemaHash: pool.targetSchemaHash } : {}),
       bindings: structuredClone(inference.bindings),
       missing: inference.missing.map((value) => [...value]),
-      occurrences: pool.samples.length,
+      occurrences: pool.observations.length,
       replayProbability: inference.replayProbability,
       averageDurationMs,
-      lastSeenSequence: pool.samples.at(-1)?.target.sequence ?? this.sequence,
+      lastSeenSequence: pool.observations.at(-1)?.sequence ?? this.sequence,
     };
     this.patterns.set(id, pattern);
     pool.patternId = id;
@@ -418,20 +469,59 @@ export class FusionLearner {
   }
 
   private patternsMatchingToolSuffix(tools: readonly string[]): readonly LearnedToolPattern[] {
-    return [...this.patterns.values()].filter(
-      (pattern) =>
-        pattern.contextTools.length <= tools.length &&
-        pattern.contextTools.every(
-          (tool, index) => tool === tools[tools.length - pattern.contextTools.length + index],
-        ),
-    );
+    if (!this.settings.indexToolSuffixes) {
+      return [...this.patterns.values()].filter((pattern) =>
+        matchesSuffix(tools, pattern.contextTools),
+      );
+    }
+    this.ensureIndex();
+    return [...this.toolPatternTrie.matching(tools)]
+      .map((patternId) => this.patterns.get(patternId))
+      .filter(
+        (pattern): pattern is LearnedToolPattern =>
+          pattern !== undefined && matchesSuffix(tools, pattern.contextTools),
+      );
   }
 
   private ensureIndex(): void {
     if (!this.indexDirty) return;
     this.patternTrie = new SuffixPatternTrie();
-    for (const pattern of this.patterns.values()) this.patternTrie.insert(pattern.context, pattern.id);
+    this.toolPatternTrie = new SuffixPatternTrie();
+    for (const pattern of this.patterns.values()) {
+      this.patternTrie.insert(pattern.context, pattern.id);
+      this.toolPatternTrie.insert(pattern.contextTools, pattern.id);
+    }
     this.indexDirty = false;
+  }
+
+  private snapshotPools(): readonly FusionPatternPoolSnapshot[] {
+    const pools = [...this.pools.values()]
+      .sort(
+        (left, right) =>
+          (right.observations.at(-1)?.sequence ?? 0) -
+            (left.observations.at(-1)?.sequence ?? 0) ||
+          left.key.localeCompare(right.key),
+      )
+      .slice(0, this.settings.maxPatterns * 2);
+    const result: FusionPatternPoolSnapshot[] = [];
+    let bytes = 2;
+    for (const pool of pools) {
+      const snapshot: FusionPatternPoolSnapshot = {
+        key: pool.key,
+        context: [...pool.context],
+        contextTools: [...pool.contextTools],
+        targetTool: pool.targetTool,
+        ...(pool.targetSchemaHash ? { targetSchemaHash: pool.targetSchemaHash } : {}),
+        observations: pool.observations.map(cloneBindingObservationEvidence),
+        ...(pool.patternId ? { patternId: pool.patternId } : {}),
+      };
+      const itemBytes = Buffer.byteLength(JSON.stringify(snapshot), "utf8") +
+        (result.length > 0 ? 1 : 0);
+      if (bytes + itemBytes > this.settings.maxPersistedEvidenceBytes) continue;
+      result.push(snapshot);
+      bytes += itemBytes;
+    }
+    return result;
   }
 
   private trimPools(): void {
@@ -440,8 +530,8 @@ export class FusionLearner {
     const evicted = [...this.pools.values()]
       .sort(
         (left, right) =>
-          (left.samples.at(-1)?.target.sequence ?? 0) -
-            (right.samples.at(-1)?.target.sequence ?? 0) ||
+          (left.observations.at(-1)?.sequence ?? 0) -
+            (right.observations.at(-1)?.sequence ?? 0) ||
           left.key.localeCompare(right.key),
       )
       .slice(0, this.pools.size - limit);
@@ -469,6 +559,44 @@ export function eventToken(event: Pick<ToolEvent, "tool" | "outcome" | "schemaHa
     outcome: event.outcome,
     ...(event.schemaHash ? { schemaHash: event.schemaHash } : {}),
   });
+}
+
+/**
+ * Contiguous suffixes preserve ordinary PPM-style learning. Bounded projected
+ * subsequences additionally expose causal data flow across unrelated calls,
+ * mirroring speculative-action's future-gap modeling without speculating or
+ * executing anything.
+ */
+function learningContexts(
+  history: readonly ToolEvent[],
+  maxOrder: number,
+  includeProjected: boolean,
+): readonly LearningContext[] {
+  const bounded = history.slice(-Math.max(0, maxOrder));
+  const result: LearningContext[] = [];
+  const seen = new Set<string>();
+  for (let length = 1; length <= bounded.length; length++) {
+    const events = bounded.slice(-length);
+    const key = events.map((event) => event.sequence).join(",");
+    seen.add(key);
+    result.push({ events, projected: false });
+  }
+  if (!includeProjected || bounded.length < 2) return result;
+
+  // Keep the combinatorial projection bounded even if a caller configures a
+  // very large PPM order. The default order of four explores all 15 subsets.
+  const projectionWindow = bounded.slice(-Math.min(8, bounded.length));
+  const combinations = 2 ** projectionWindow.length;
+  for (let mask = combinations - 1; mask >= 1; mask--) {
+    const events = projectionWindow.filter((_event, index) =>
+      Boolean(mask & (1 << index)),
+    );
+    const key = events.map((event) => event.sequence).join(",");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({ events, projected: true });
+  }
+  return result;
 }
 
 function normalizeEvent(
@@ -602,6 +730,122 @@ function clonePattern(pattern: LearnedToolPattern): LearnedToolPattern {
   };
 }
 
+function cloneBindingObservationEvidence(
+  observation: BindingObservationEvidence,
+): BindingObservationEvidence {
+  return {
+    sessionHash: observation.sessionHash,
+    durationMs: observation.durationMs,
+    sequence: observation.sequence,
+    paths: Object.fromEntries(
+      Object.entries(observation.paths).map(([encodedPath, evidence]) => [
+        encodedPath,
+        {
+          candidateHashes: [...evidence.candidateHashes],
+          ...(evidence.constantHash ? { constantHash: evidence.constantHash } : {}),
+          ...(evidence.secret ? { secret: true as const } : {}),
+        },
+      ]),
+    ),
+  };
+}
+
+function parsePatternPool(
+  value: unknown,
+  settings: FusionLearnerSettings,
+): PatternPool | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const context = stringArray(record.context);
+  const contextTools = stringArray(record.contextTools);
+  const targetTool = typeof record.targetTool === "string" ? record.targetTool : undefined;
+  const targetSchemaHash =
+    typeof record.targetSchemaHash === "string" ? record.targetSchemaHash : undefined;
+  if (
+    typeof record.key !== "string" ||
+    !isFingerprint(record.key) ||
+    !context ||
+    context.length === 0 ||
+    context.length > settings.maxOrder ||
+    !contextTools ||
+    contextTools.length !== context.length ||
+    !targetTool ||
+    (record.targetSchemaHash !== undefined && targetSchemaHash === undefined) ||
+    !Array.isArray(record.observations) ||
+    (record.patternId !== undefined &&
+      (typeof record.patternId !== "string" || !isFingerprint(record.patternId)))
+  ) {
+    return undefined;
+  }
+  const expectedKey = stableHash({ context, targetTool, targetSchemaHash });
+  if (record.key !== expectedKey) return undefined;
+  const observations = record.observations
+    .map((item) => parseBindingObservationEvidence(item, settings.maxEvidenceCandidatesPerPath))
+    .filter((item): item is BindingObservationEvidence => item !== undefined)
+    .slice(-settings.maxSamplesPerPool);
+  if (!observations.length) return undefined;
+  return {
+    key: record.key,
+    context,
+    contextTools,
+    targetTool,
+    ...(targetSchemaHash ? { targetSchemaHash } : {}),
+    observations,
+    ...(typeof record.patternId === "string" ? { patternId: record.patternId } : {}),
+  };
+}
+
+function parseBindingObservationEvidence(
+  value: unknown,
+  maxCandidatesPerPath: number,
+): BindingObservationEvidence | undefined {
+  const record = asRecord(value);
+  const paths = asRecord(record?.paths);
+  if (
+    !record ||
+    !isFingerprint(record.sessionHash) ||
+    typeof record.durationMs !== "number" ||
+    !Number.isFinite(record.durationMs) ||
+    record.durationMs < 0 ||
+    !Number.isSafeInteger(record.sequence) ||
+    Number(record.sequence) < 0 ||
+    !paths
+  ) {
+    return undefined;
+  }
+  const normalizedPaths: Record<string, BindingObservationEvidence["paths"][string]> = {};
+  for (const [encodedPath, item] of Object.entries(paths)) {
+    const evidence = asRecord(item);
+    if (
+      !isEncodedSafePath(encodedPath) ||
+      !evidence ||
+      !Array.isArray(evidence.candidateHashes) ||
+      !evidence.candidateHashes.every(isFingerprint) ||
+      (evidence.constantHash !== undefined && !isFingerprint(evidence.constantHash)) ||
+      (evidence.secret !== undefined && evidence.secret !== true)
+    ) {
+      return undefined;
+    }
+    if (evidence.secret === true) {
+      normalizedPaths[encodedPath] = { candidateHashes: [], secret: true };
+      continue;
+    }
+    normalizedPaths[encodedPath] = {
+      candidateHashes: [...new Set(evidence.candidateHashes as string[])]
+        .slice(0, maxCandidatesPerPath),
+      ...(typeof evidence.constantHash === "string"
+        ? { constantHash: evidence.constantHash }
+        : {}),
+    };
+  }
+  return {
+    sessionHash: record.sessionHash as string,
+    durationMs: record.durationMs,
+    sequence: Number(record.sequence),
+    paths: normalizedPaths,
+  };
+}
+
 function deduplicateCandidates(candidates: readonly FusionCandidate[]): FusionCandidate[] {
   const result = new Map<string, FusionCandidate>();
   for (const candidate of candidates) {
@@ -685,18 +929,39 @@ function normalizeSettings(value: Partial<FusionLearnerSettings>): FusionLearner
       value.maxPathDepth,
       FUSION_LEARNER_DEFAULTS.maxPathDepth,
     ),
+    maxEvidenceCandidatesPerPath: positiveInteger(
+      value.maxEvidenceCandidatesPerPath,
+      FUSION_LEARNER_DEFAULTS.maxEvidenceCandidatesPerPath,
+    ),
+    maxPersistedEvidenceBytes: positiveInteger(
+      value.maxPersistedEvidenceBytes,
+      FUSION_LEARNER_DEFAULTS.maxPersistedEvidenceBytes,
+    ),
+    persistBindingEvidence: booleanSetting(
+      value.persistBindingEvidence,
+      FUSION_LEARNER_DEFAULTS.persistBindingEvidence,
+    ),
+    learnCausalSubsequences: booleanSetting(
+      value.learnCausalSubsequences,
+      FUSION_LEARNER_DEFAULTS.learnCausalSubsequences,
+    ),
+    indexToolSuffixes: booleanSetting(
+      value.indexToolSuffixes,
+      FUSION_LEARNER_DEFAULTS.indexToolSuffixes,
+    ),
   };
 }
 
 function isSnapshot(value: unknown): value is FusionLearnerSnapshot {
   if (!value || typeof value !== "object") return false;
-  const snapshot = value as Partial<FusionLearnerSnapshot>;
+  const snapshot = value as Record<string, unknown>;
   return (
-    snapshot.version === 1 &&
+    (snapshot.version === 1 || snapshot.version === 2) &&
     Number.isSafeInteger(snapshot.sequence) &&
-    (snapshot.sequence ?? -1) >= 0 &&
+    Number(snapshot.sequence) >= 0 &&
     Array.isArray(snapshot.ppm) &&
-    Array.isArray(snapshot.patterns)
+    Array.isArray(snapshot.patterns) &&
+    (snapshot.version === 1 || Array.isArray(snapshot.pools))
   );
 }
 
@@ -821,10 +1086,30 @@ function probability(value: number | undefined, fallback: number): number {
     : fallback;
 }
 
+function booleanSetting(value: boolean | undefined, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
 function clampProbability(value: number): number {
   return Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
 }
 
 function finite(value: number): number {
   return Number.isFinite(value) ? value : 0;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? [...value]
+    : undefined;
+}
+
+function isFingerprint(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{32}$/.test(value);
 }

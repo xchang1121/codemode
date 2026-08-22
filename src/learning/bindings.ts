@@ -1,6 +1,7 @@
 import path from "node:path";
-import { stableStringify } from "../core/stable.js";
+import { stableHash, stableStringify } from "../core/stable.js";
 import type {
+  BindingObservationEvidence,
   BindingSource,
   FusionDependency,
   LearnedBindingSet,
@@ -30,6 +31,22 @@ export interface BindingSample {
 export interface BindingInferenceOptions {
   readonly minimumReplayProbability: number;
   readonly minimumConstantSupport: number;
+}
+
+export interface BindingEvidenceCandidate {
+  readonly hash: string;
+  readonly binding: ValueBinding;
+}
+
+/**
+ * Ephemeral companion to a value-minimized evidence row. This object may hold
+ * current-call values long enough to promote a supported rule, but it is never
+ * included in a learner snapshot.
+ */
+export interface BindingEvidenceCapture {
+  readonly evidence: BindingObservationEvidence;
+  readonly candidates: Readonly<Record<string, readonly BindingEvidenceCandidate[]>>;
+  readonly constants: Readonly<Record<string, unknown>>;
 }
 
 export function inferStableBindings(
@@ -116,6 +133,190 @@ export function inferStableBindings(
     replayProbability:
       replayOpportunities > 0 ? replayMatches / replayOpportunities : 0,
   };
+}
+
+/**
+ * Convert one successful binding sample into persistable structural evidence.
+ * Raw arguments, outputs, template fragments and constants stay only in the
+ * returned ephemeral capture; the nested `evidence` value contains hashes.
+ */
+export function captureBindingEvidence(
+  sample: BindingSample,
+  maxCandidatesPerPath = 64,
+): BindingEvidenceCapture {
+  const paths: Record<string, BindingObservationEvidence["paths"][string]> = {};
+  const candidates: Record<string, BindingEvidenceCandidate[]> = {};
+  const constants: Record<string, unknown> = {};
+  const candidateLimit = Math.max(1, Math.floor(maxCandidatesPerPath));
+
+  for (const [targetPath, target] of leaves(sample.target.input)) {
+    if (targetPath.length === 0) continue;
+    const encodedPath = encodePath(targetPath);
+    if (isSecretPath(targetPath)) {
+      paths[encodedPath] = { candidateHashes: [], secret: true };
+      continue;
+    }
+    const available = uniqueBindings(candidateBindings(sample.context, target, targetPath))
+      .sort(
+        (left, right) =>
+          bindingComplexity(left) - bindingComplexity(right) ||
+          stableStringify(left).localeCompare(stableStringify(right)),
+      )
+      .slice(0, candidateLimit)
+      .map((binding) => ({ hash: bindingFingerprint(binding), binding }));
+    const constantHash = constantFingerprint(target);
+    paths[encodedPath] = {
+      candidateHashes: available.map((item) => item.hash),
+      constantHash,
+    };
+    candidates[encodedPath] = available;
+    constants[encodedPath] = target;
+  }
+
+  return {
+    evidence: {
+      sessionHash: stableHash({ sessionId: sample.target.sessionId }),
+      durationMs: Math.max(0, sample.target.durationMs ?? 0),
+      sequence: Math.max(0, sample.target.sequence),
+      paths,
+    },
+    candidates,
+    constants,
+  };
+}
+
+/**
+ * Infer bindings from redacted evidence accumulated across process lifetimes.
+ * A concrete rule is promoted only when its structural fingerprint is present
+ * in the current sample or in an already-promoted pattern.
+ */
+export function inferStableBindingsFromEvidence(
+  observations: readonly BindingObservationEvidence[],
+  current: BindingEvidenceCapture,
+  knownBindings: Readonly<Record<string, ValueBinding>>,
+  options: BindingInferenceOptions,
+): LearnedBindingSet {
+  if (!observations.length) return { bindings: {}, missing: [], replayProbability: 0 };
+  const bindings: Record<string, ValueBinding> = {};
+  const missing: ValuePath[] = [];
+  let replayMatches = 0;
+  let replayOpportunities = 0;
+  const encodedPaths = new Set(
+    observations.flatMap((observation) => Object.keys(observation.paths)),
+  );
+
+  for (const encodedPath of [...encodedPaths].sort()) {
+    const targetPath = decodePath(encodedPath);
+    const rows = observations.map((observation) => observation.paths[encodedPath]);
+    if (
+      targetPath.length === 0 ||
+      rows.some((row) => row === undefined || row.secret === true)
+    ) {
+      if (targetPath.length > 0) missing.push(targetPath);
+      continue;
+    }
+
+    const candidateCounts = new Map<string, number>();
+    for (const row of rows) {
+      for (const hash of new Set(row?.candidateHashes ?? [])) {
+        candidateCounts.set(hash, (candidateCounts.get(hash) ?? 0) + 1);
+      }
+    }
+    const available = new Map<string, ValueBinding>();
+    for (const candidate of current.candidates[encodedPath] ?? []) {
+      available.set(candidate.hash, candidate.binding);
+    }
+    const known = knownBindings[encodedPath];
+    if (known) available.set(bindingFingerprint(known), known);
+
+    const bestCount = Math.max(0, ...candidateCounts.values());
+    let selected = [...available]
+      .filter(([hash]) => (candidateCounts.get(hash) ?? 0) === bestCount && bestCount > 0)
+      .map(([, binding]) => binding)
+      .sort(
+        (left, right) =>
+          bindingComplexity(left) - bindingComplexity(right) ||
+          stableStringify(left).localeCompare(stableStringify(right)),
+      )[0];
+    let selectedMatches = selected ? bestCount : -1;
+    if (
+      selected &&
+      selectedMatches / observations.length < options.minimumReplayProbability
+    ) {
+      selected = undefined;
+    }
+
+    if (!selected) {
+      const hashes = rows.map((row) => row?.constantHash);
+      const stableConstant =
+        hashes[0] !== undefined && hashes.every((hash) => hash === hashes[0]);
+      const expectedHash = hashes[0];
+      let value: unknown;
+      let hasValue = false;
+      if (
+        stableConstant &&
+        expectedHash !== undefined &&
+        current.evidence.paths[encodedPath]?.constantHash === expectedHash &&
+        Object.hasOwn(current.constants, encodedPath)
+      ) {
+        value = current.constants[encodedPath];
+        hasValue = true;
+      } else if (
+        stableConstant &&
+        expectedHash !== undefined &&
+        known?.type === "constant" &&
+        constantFingerprint(known.value) === expectedHash
+      ) {
+        value = known.value;
+        hasValue = true;
+      }
+      const sessions = new Set(
+        observations
+          .filter((observation) => observation.paths[encodedPath]?.constantHash === expectedHash)
+          .map((observation) => observation.sessionHash),
+      );
+      if (
+        stableConstant &&
+        hasValue &&
+        (!requiresProvenance(targetPath, value) ||
+          sessions.size >= options.minimumConstantSupport)
+      ) {
+        selected = { type: "constant", value: structuredClone(value) };
+        selectedMatches = observations.length;
+      }
+    }
+
+    if (!selected) {
+      missing.push(targetPath);
+      continue;
+    }
+    bindings[encodedPath] = selected;
+    replayMatches += Math.max(0, selectedMatches);
+    replayOpportunities += observations.length;
+  }
+
+  return {
+    bindings,
+    missing,
+    replayProbability:
+      replayOpportunities > 0 ? replayMatches / replayOpportunities : 0,
+  };
+}
+
+export function bindingEvidenceHasOutputDependency(capture: BindingEvidenceCapture): boolean {
+  return Object.values(capture.candidates).some((items) =>
+    items.some((item) =>
+      bindingSources(item.binding).some((source) => source.field === "output"),
+    ),
+  );
+}
+
+export function bindingFingerprint(binding: ValueBinding): string {
+  return stableHash({ binding });
+}
+
+function constantFingerprint(value: unknown): string {
+  return stableHash({ constant: value });
 }
 
 export function applyBindingsPartial(

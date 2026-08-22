@@ -113,6 +113,11 @@ export const CodeModeConfigSchema = z
         maxSuggestions: positiveIntegerSchema.optional(),
         beamWidthPerTool: positiveIntegerSchema.optional(),
         maxPathDepth: positiveIntegerSchema.optional(),
+        maxEvidenceCandidatesPerPath: positiveIntegerSchema.optional(),
+        maxPersistedEvidenceBytes: positiveIntegerSchema.optional(),
+        persistBindingEvidence: z.boolean().optional(),
+        learnCausalSubsequences: z.boolean().optional(),
+        indexToolSuffixes: z.boolean().optional(),
       })
       .strict()
       .optional(),
