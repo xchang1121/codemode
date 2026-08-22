@@ -6,6 +6,17 @@ import {
   type CallToolResult,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CODE_MODE_INSTRUCTIONS,
+  CODE_MODE_META_KEY,
+  codeModeSessionId,
+  codeModeToolDefinitions,
+  parseCodeModeRequest,
+  type CodeModeDescribeInput,
+  type CodeModeExecuteInput,
+  type CodeModeSearchInput,
+  type CodeModeSuggestInput,
+} from "../code-mode/contract.js";
 import { stableStringify } from "../core/stable.js";
 import type { CodeExecutor } from "../execution/types.js";
 import {
@@ -21,12 +32,6 @@ import {
 } from "../tools/schema-to-typescript.js";
 import type { ToolRegistry } from "../tools/tool-registry.js";
 import type { ToolInvocationTrace, ToolResult } from "../tools/types.js";
-
-const CODEMODE_SEARCH = "codemode_search";
-const CODEMODE_DESCRIBE = "codemode_describe";
-const CODEMODE_SUGGEST = "codemode_suggest";
-const CODEMODE_EXECUTE = "codemode_execute";
-const HINT_META_KEY = "io.github.xchang1121/codemode";
 
 export type HintDelivery = "content" | "meta" | "both" | "off";
 
@@ -78,25 +83,26 @@ export class CodeModeGateway {
       },
       {
         capabilities: { tools: { listChanged: true } },
-        instructions: [
-          "This server exposes ordinary tools plus Code Mode.",
-          "Use codemode_search and codemode_describe to discover typed tools.",
-          "Use codemode_suggest to inspect learned multi-tool paths; copy a hint's allowedTools stable IDs exactly into codemode_execute.allowed_tools.",
-          "Use codemode_execute for dependent calls, loops, branching, filtering or parallel calls.",
-          "Every codemode_execute request must include an explicit allowed_tools list.",
-        ].join(" "),
+        instructions: CODE_MODE_INSTRUCTIONS,
       },
     );
     this.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: this.listTools() }));
     this.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       const args = asRecord(request.params.arguments) ?? {};
-      const sessionId = requestSessionId(extra.sessionId, extra._meta);
+      const sessionId = codeModeSessionId(extra.sessionId, extra._meta);
       try {
-        if (request.params.name === CODEMODE_SEARCH) return this.search(args);
-        if (request.params.name === CODEMODE_DESCRIBE) return this.describe(args);
-        if (request.params.name === CODEMODE_SUGGEST) return this.suggest(args, sessionId);
-        if (request.params.name === CODEMODE_EXECUTE) {
-          return await this.execute(args, sessionId, extra.signal);
+        const codeModeRequest = parseCodeModeRequest(request.params.name, args);
+        if (codeModeRequest) {
+          switch (codeModeRequest.kind) {
+            case "search":
+              return this.search(codeModeRequest.input);
+            case "describe":
+              return this.describe(codeModeRequest.input);
+            case "suggest":
+              return this.suggest(codeModeRequest.input, sessionId);
+            case "execute":
+              return await this.execute(codeModeRequest.input, sessionId, extra.signal);
+          }
         }
         const tool = this.registry.get(request.params.name);
         if (!this.exposeDirectTools || !tool) {
@@ -122,12 +128,7 @@ export class CodeModeGateway {
   }
 
   listTools(): readonly Tool[] {
-    const tools: Tool[] = [
-      searchTool(),
-      describeTool(),
-      suggestTool(),
-      executeTool(),
-    ];
+    const tools = codeModeToolDefinitions();
     if (!this.exposeDirectTools) return tools;
     const common = renderFusionHints(
       this.learner.commonPaths(8, this.registry.schemaHashes()),
@@ -147,7 +148,7 @@ export class CodeModeGateway {
         description: `${registered.definition.description ?? registered.originalName}\n\nUpstream tool id: ${registered.id}.${suffix}`,
         _meta: {
           ...registered.definition._meta,
-          [HINT_META_KEY]: {
+          [CODE_MODE_META_KEY]: {
             upstreamToolId: registered.id,
             codeReference: this.registry.codeReference(registered.id),
             fusionHints: related,
@@ -167,10 +168,8 @@ export class CodeModeGateway {
     await Promise.allSettled([this.server.close(), this.registry.close()]);
   }
 
-  private search(args: Readonly<Record<string, unknown>>): CallToolResult {
-    assertOnlyKeys(args, ["query", "limit"]);
-    const query = stringArgument(args, "query");
-    const limit = numberArgument(args.limit, 12, 1, 50);
+  private search(input: CodeModeSearchInput): CallToolResult {
+    const { query, limit } = input;
     const tools = this.registry.search(query, limit);
     const pathHints = this.filterHints(
       this.learner.commonPaths(limit, this.registry.schemaHashes()),
@@ -189,9 +188,8 @@ export class CodeModeGateway {
     return jsonResult(structuredContent);
   }
 
-  private describe(args: Readonly<Record<string, unknown>>): CallToolResult {
-    assertOnlyKeys(args, ["names"]);
-    const names = stringArrayArgument(args, "names", 1, 50, false);
+  private describe(input: CodeModeDescribeInput): CallToolResult {
+    const { names } = input;
     const tools = names.map((name) => this.registry.require(name));
     const structuredContent = {
       tools: tools.map((tool) => ({
@@ -209,12 +207,10 @@ export class CodeModeGateway {
   }
 
   private suggest(
-    args: Readonly<Record<string, unknown>>,
+    input: CodeModeSuggestInput,
     sessionId: string,
   ): CallToolResult {
-    assertOnlyKeys(args, ["task", "limit"]);
-    const task = args.task === undefined ? "" : stringArgument(args, "task");
-    const limit = numberArgument(args.limit, 5, 1, 20);
+    const { task, limit } = input;
     const schemaHashes = this.registry.schemaHashes();
     const sessionPaths = this.learner.predictPaths(sessionId, schemaHashes);
     const paths = sessionPaths.length
@@ -225,14 +221,11 @@ export class CodeModeGateway {
   }
 
   private async execute(
-    args: Readonly<Record<string, unknown>>,
+    input: CodeModeExecuteInput,
     sessionId: string,
     signal: AbortSignal,
   ): Promise<CallToolResult> {
-    assertOnlyKeys(args, ["description", "allowed_tools", "code"]);
-    const code = stringArgument(args, "code");
-    const description = stringArgument(args, "description");
-    const allowedTools = stringArrayArgument(args, "allowed_tools", 1, 10_000, true);
+    const { code, description, allowedTools } = input;
     const result = await this.executor.execute({
       code,
       allowedTools,
@@ -343,104 +336,12 @@ export class CodeModeGateway {
         ? {
             _meta: {
               ...result._meta,
-              [HINT_META_KEY]: { fusionHints: hints },
+              [CODE_MODE_META_KEY]: { fusionHints: hints },
             },
           }
         : {}),
     };
   }
-}
-
-function searchTool(): Tool {
-  return {
-    name: CODEMODE_SEARCH,
-    description:
-      "Search upstream tools and learned fusion paths without loading the full catalog. Call this before codemode_describe when the relevant tools are unknown.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Capability or task to search for" },
-        limit: { type: "integer", minimum: 1, maximum: 50, default: 12 },
-      },
-      required: ["query"],
-      additionalProperties: false,
-    },
-    outputSchema: objectOutputSchema(),
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
-  };
-}
-
-function describeTool(): Tool {
-  return {
-    name: CODEMODE_DESCRIBE,
-    description:
-      "Return exact input/output schemas, code references and TypeScript declarations for selected upstream tools.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        names: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 50 },
-      },
-      required: ["names"],
-      additionalProperties: false,
-    },
-    outputSchema: objectOutputSchema(),
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
-  };
-}
-
-function suggestTool(): Tool {
-  return {
-    name: CODEMODE_SUGGEST,
-    description:
-      "Show PPM + trie learned tool paths whose structured results can feed later tool arguments. Each hint returns an executable JavaScript skeleton and canonical allowedTools IDs ready for codemode_execute.allowed_tools.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        task: { type: "string", description: "Optional task text used to filter paths" },
-        limit: { type: "integer", minimum: 1, maximum: 20, default: 5 },
-      },
-      additionalProperties: false,
-    },
-    outputSchema: objectOutputSchema(),
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
-  };
-}
-
-function executeTool(): Tool {
-  return {
-    name: CODEMODE_EXECUTE,
-    description: [
-      "Execute the body of one async JavaScript function in an isolated QuickJS/WASM sandbox.",
-      "Use await tools[namespace][name](args) for dependent calls and Promise.all for independent calls.",
-      "Only tools named in allowed_tools exist inside the sandbox. No filesystem, process, environment or direct network APIs are available.",
-      "Call codemode_search/codemode_describe first if exact tool schemas are not known.",
-    ].join(" "),
-    inputSchema: {
-      type: "object",
-      properties: {
-        description: { type: "string", description: "Short summary of the program" },
-        allowed_tools: {
-          type: "array",
-          items: { type: "string" },
-          minItems: 1,
-          maxItems: 10_000,
-          uniqueItems: true,
-          description: "Explicit upstream stable IDs (prefer hint.allowedTools) or gateway names available to the program",
-        },
-        code: {
-          type: "string",
-          description: "JavaScript function body. Top-level await and return are supported.",
-        },
-      },
-      required: ["description", "allowed_tools", "code"],
-      additionalProperties: false,
-    },
-    outputSchema: objectOutputSchema(),
-  };
-}
-
-function objectOutputSchema(): Tool["outputSchema"] {
-  return { type: "object", additionalProperties: true };
 }
 
 function traceObservation(trace: ToolInvocationTrace): ToolObservation {
@@ -460,12 +361,6 @@ function traceObservation(trace: ToolInvocationTrace): ToolObservation {
   };
 }
 
-function requestSessionId(sessionId: string | undefined, meta: unknown): string {
-  const record = asRecord(meta);
-  const supplied = record?.["io.github.xchang1121/codemode-session"];
-  return typeof supplied === "string" && supplied ? supplied : sessionId ?? "default";
-}
-
 function jsonResult(structuredContent: Record<string, unknown>): CallToolResult {
   return {
     content: [{ type: "text", text: JSON.stringify(structuredContent, null, 2) }],
@@ -479,58 +374,8 @@ function errorResult(error: unknown): CallToolResult {
   return {
     isError: true,
     content: [{ type: "text", text: `${name}: ${message}` }],
-    _meta: { [HINT_META_KEY]: { error: { name, message } } },
+    _meta: { [CODE_MODE_META_KEY]: { error: { name, message } } },
   };
-}
-
-function numberArgument(
-  value: unknown,
-  fallback: number,
-  minimum: number,
-  maximum: number,
-): number {
-  if (value === undefined) return fallback;
-  if (typeof value !== "number" || !Number.isInteger(value) || value < minimum || value > maximum) {
-    throw new TypeError(`Expected an integer from ${minimum} to ${maximum}`);
-  }
-  return value;
-}
-
-function stringArgument(args: Readonly<Record<string, unknown>>, key: string): string {
-  const value = args[key];
-  if (typeof value !== "string") throw new TypeError(`${key} must be a string`);
-  return value;
-}
-
-function stringArrayArgument(
-  args: Readonly<Record<string, unknown>>,
-  key: string,
-  minimum: number,
-  maximum: number,
-  unique: boolean,
-): string[] {
-  const value = args[key];
-  if (
-    !Array.isArray(value) ||
-    value.length < minimum ||
-    value.length > maximum ||
-    value.some((item) => typeof item !== "string")
-  ) {
-    throw new TypeError(`${key} must contain ${minimum}-${maximum} strings`);
-  }
-  const result = value as string[];
-  if (unique && new Set(result).size !== result.length) {
-    throw new TypeError(`${key} must not contain duplicates`);
-  }
-  return [...result];
-}
-
-function assertOnlyKeys(
-  args: Readonly<Record<string, unknown>>,
-  allowed: readonly string[],
-): void {
-  const unexpected = Object.keys(args).filter((key) => !allowed.includes(key));
-  if (unexpected.length) throw new TypeError(`Unexpected argument: ${unexpected.join(", ")}`);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

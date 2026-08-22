@@ -47,6 +47,22 @@ export type {
   ValuePath,
 } from "./learning/types.js";
 export {
+  CODE_MODE_INSTRUCTIONS,
+  CODE_MODE_META_KEY,
+  CODE_MODE_SESSION_META_KEY,
+  CODE_MODE_TOOL_NAMES,
+  codeModeSessionId,
+  codeModeToolDefinitions,
+  isCodeModeToolName,
+  parseCodeModeRequest,
+  type CodeModeDescribeInput,
+  type CodeModeExecuteInput,
+  type CodeModeRequest,
+  type CodeModeSearchInput,
+  type CodeModeSuggestInput,
+  type CodeModeToolName,
+} from "./code-mode/contract.js";
+export {
   CodeModeGateway,
   type CodeModeGatewayOptions,
   type HintDelivery,
