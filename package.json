@@ -4,15 +4,35 @@
   "description": "MCP Code Mode gateway with learned PPM + trie tool-path hints",
   "type": "module",
   "license": "MIT",
+  "author": "xchang1121",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xchang1121/codemode.git"
+  },
+  "homepage": "https://github.com/xchang1121/codemode#readme",
+  "bugs": {
+    "url": "https://github.com/xchang1121/codemode/issues"
+  },
+  "keywords": [
+    "mcp",
+    "code-mode",
+    "agent",
+    "tool-use",
+    "tool-orchestration"
+  ],
+  "sideEffects": false,
   "private": false,
   "engines": {
     "node": ">=20.17"
   },
   "files": [
     "dist",
+    "docs",
     "examples",
     "codemode.config.schema.json",
     "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"
   ],
@@ -20,6 +40,9 @@
   "types": "./dist/index.d.ts",
   "bin": {
     "codemode": "./dist/cli.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "exports": {
     ".": {
@@ -36,6 +59,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
     "start": "node ./dist/cli.js",
     "check": "npm run typecheck && npm run test && npm run build && npm run test:e2e",
     "test": "vitest run",

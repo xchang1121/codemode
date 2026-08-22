@@ -1,0 +1,44 @@
+{
+  "$schema": "../codemode.config.schema.json",
+  "version": 1,
+  "servers": {
+    "workspace": {
+      "transport": "stdio",
+      "command": "node",
+      "args": ["/absolute/path/to/workspace-mcp-server.js"],
+      "cwd": "/absolute/path/to/workspace",
+      "env": {
+        "WORKSPACE_MCP_TOKEN": "${WORKSPACE_MCP_TOKEN}"
+      }
+    },
+    "remote": {
+      "transport": "http",
+      "url": "${REMOTE_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer ${REMOTE_MCP_TOKEN}"
+      }
+    }
+  },
+  "gateway": {
+    "exposeDirectTools": true,
+    "hintDelivery": "both",
+    "maxActiveHints": 2
+  },
+  "execution": {
+    "timeoutMs": 30000,
+    "perToolTimeoutMs": 20000,
+    "maxToolCalls": 32,
+    "maxConcurrentToolCalls": 8,
+    "memoryLimitBytes": 67108864,
+    "maxResultBytes": 4194304
+  },
+  "learning": {
+    "minimumOccurrences": 2,
+    "maxOrder": 4,
+    "maxPathDepth": 4
+  },
+  "state": {
+    "path": ".codemode/learned-state.json",
+    "debounceMs": 500
+  }
+}

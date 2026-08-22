@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "codemode": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/codemode/dist/cli.js",
+        "--config",
+        "/absolute/path/to/codemode.config.json"
+      ],
+      "env": {
+        "WORKSPACE_MCP_TOKEN": "replace-or-inherit-in-your-client",
+        "REMOTE_MCP_URL": "https://mcp.example.com/mcp",
+        "REMOTE_MCP_TOKEN": "replace-or-inherit-in-your-client"
+      }
+    }
+  }
+}

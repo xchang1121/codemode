@@ -1,7 +1,8 @@
 # Third-party notices
 
-The bounded PPM count-trie design in `src/learning/ppm-count-trie.ts` is adapted
-from the `speculative-action` branch of
+The bounded PPM count-trie implementation in
+`src/learning/ppm-count-trie.ts`, together with parts of the suffix-prediction
+and structural-binding design, is adapted from the `speculative-action` branch of
 [`xchang1121/pi`](https://github.com/xchang1121/pi/tree/speculative-action),
 originally distributed under the MIT License:
 
