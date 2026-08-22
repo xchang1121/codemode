@@ -63,6 +63,19 @@ export {
   type CodeModeToolName,
 } from "./code-mode/contract.js";
 export {
+  CodeModeService,
+  errorResult,
+  jsonResult,
+  type CodeModeApplicationPort,
+  type CodeModeCallRequest,
+  type CodeModeServiceOptions,
+} from "./code-mode/service.js";
+export {
+  createDefaultCodeModeApplication,
+  type DefaultCodeModeApplication,
+  type DefaultCodeModeApplicationOptions,
+} from "./code-mode/composition.js";
+export {
   CodeModeGateway,
   type CodeModeGatewayOptions,
   type HintDelivery,
