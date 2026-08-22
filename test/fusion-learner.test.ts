@@ -150,6 +150,53 @@ describe("FusionLearner", () => {
     expect(
       learner.commonPaths(8, { search: "search-v1", get: "get-v2" }),
     ).toHaveLength(0);
+    expect(
+      learner.commonPaths(8, { search: "search-v2", get: "get-v1" }),
+    ).toHaveLength(0);
+  });
+
+  test("does not turn failed calls into reusable fusion paths", () => {
+    const learner = new FusionLearner();
+    for (const sessionId of ["one", "two"]) {
+      learner.observe({
+        sessionId,
+        tool: "search",
+        input: {},
+        output: { items: [{ id: sessionId }] },
+        outcome: "success",
+      });
+      learner.observe({
+        sessionId,
+        tool: "get",
+        input: { id: sessionId },
+        outcome: "error",
+      });
+      learner.finishSession(sessionId);
+    }
+
+    expect(learner.commonPaths()).toHaveLength(0);
+    expect(learner.learnedPatterns()).toHaveLength(0);
+  });
+
+  test("omits unrelated older context from an executable fusion path", () => {
+    const learner = new FusionLearner();
+    for (const [sessionId, id] of [["one", "A"], ["two", "B"]] as const) {
+      learner.observe({ sessionId, tool: "noise", input: {}, outcome: "success" });
+      learner.observe({
+        sessionId,
+        tool: "search",
+        input: {},
+        output: { items: [{ id }] },
+        outcome: "success",
+      });
+      learner.observe({ sessionId, tool: "get", input: { id }, outcome: "success" });
+      learner.finishSession(sessionId);
+    }
+
+    expect(learner.commonPaths()).toContainEqual(
+      expect.objectContaining({ tools: ["search", "get"] }),
+    );
+    expect(learner.commonPaths().some((path) => path.tools.includes("noise"))).toBe(false);
   });
 });
 

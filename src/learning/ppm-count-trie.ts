@@ -7,6 +7,8 @@ export interface PpmCountTrieRow {
   readonly context: readonly string[];
   readonly counts: Readonly<Record<string, number>>;
   readonly lastSeen: number;
+  /** Per-target recency overrides; omitted when equal to the row recency. */
+  readonly targetLastSeen?: Readonly<Record<string, number>>;
 }
 
 export interface PpmProbabilityEstimate {
@@ -159,6 +161,12 @@ export class PpmCountTrie {
     const rows: Array<PpmCountTrieRow & { readonly total: number }> = [];
     const visit = (current: CountNode, reverseContext: readonly string[]): void => {
       if (current.total > 0) {
+        const targetLastSeen = Object.fromEntries(
+          [...current.targets.entries()]
+            .filter(([, value]) => value.lastSeen !== current.lastSeen)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([target, value]) => [target, value.lastSeen]),
+        );
         rows.push({
           context: [...reverseContext].reverse(),
           counts: Object.fromEntries(
@@ -167,6 +175,7 @@ export class PpmCountTrie {
               .map(([target, value]) => [target, value.count]),
           ),
           lastSeen: current.lastSeen,
+          ...(Object.keys(targetLastSeen).length ? { targetLastSeen } : {}),
           total: current.total,
         });
       }
@@ -202,7 +211,14 @@ export class PpmCountTrie {
       const row = parseCountRow(value);
       if (!row || row.context.length > this.order) continue;
       for (const [target, count] of Object.entries(row.counts)) {
-        if (typeof count === "number") this.setCount(row.context, target, count, row.lastSeen);
+        if (typeof count === "number") {
+          this.setCount(
+            row.context,
+            target,
+            count,
+            row.targetLastSeen?.[target] ?? row.lastSeen,
+          );
+        }
       }
     }
   }
@@ -269,7 +285,12 @@ function decayedCount(value: TargetCount | undefined, sequence: number, halfLife
 
 function parseCountRow(value: unknown): PpmCountTrieRow | undefined {
   if (!value || typeof value !== "object") return undefined;
-  const row = value as { context?: unknown; counts?: unknown; lastSeen?: unknown };
+  const row = value as {
+    context?: unknown;
+    counts?: unknown;
+    lastSeen?: unknown;
+    targetLastSeen?: unknown;
+  };
   if (
     !Array.isArray(row.context) ||
     !row.context.every((item) => typeof item === "string") ||
@@ -283,7 +304,19 @@ function parseCountRow(value: unknown): PpmCountTrieRow | undefined {
     context: row.context,
     counts: row.counts as Record<string, number>,
     lastSeen: typeof row.lastSeen === "number" ? row.lastSeen : 0,
+    ...(isNumberRecord(row.targetLastSeen)
+      ? { targetLastSeen: row.targetLastSeen }
+      : {}),
   };
+}
+
+function isNumberRecord(value: unknown): value is Record<string, number> {
+  return !!value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.values(value).every(
+      (item) => typeof item === "number" && Number.isFinite(item) && item >= 0,
+    );
 }
 
 function contextKey(context: readonly string[]): string {

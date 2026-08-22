@@ -73,11 +73,25 @@ describe("ToolRegistry", () => {
           definition: { name: "text", inputSchema: { type: "object" } },
           handler: () => ({ content: [{ type: "text", text: "hello" }] }),
         },
+        {
+          definition: {
+            name: "missing_structured",
+            inputSchema: { type: "object" },
+            outputSchema: { type: "object" },
+          },
+          handler: () => ({ content: [{ type: "text", text: "not enough" }] }),
+        },
       ]),
     );
 
     await expect(
       registry.call("demo::invalid", {}, { sessionId: "one", source: "direct" }),
+    ).rejects.toBeInstanceOf(ToolValidationError);
+    await expect(
+      registry.call("demo::missing_structured", {}, {
+        sessionId: "one",
+        source: "direct",
+      }),
     ).rejects.toBeInstanceOf(ToolValidationError);
     expect(
       toolResultValue(
@@ -125,5 +139,32 @@ describe("ToolRegistry", () => {
     const names = registry.list().map((tool) => tool.gatewayName);
     expect(new Set(names).size).toBe(2);
     expect(names).toContain("demo__a_b");
+  });
+
+  test("does not start a provider call when its signal is already aborted", async () => {
+    let calls = 0;
+    const registry = new ToolRegistry();
+    await registry.addProvider(
+      new InMemoryToolProvider("demo", [
+        {
+          definition: { name: "side_effect", inputSchema: { type: "object" } },
+          handler: () => {
+            calls++;
+            return { content: [] };
+          },
+        },
+      ]),
+    );
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled before dispatch"));
+
+    await expect(
+      registry.call("demo::side_effect", {}, {
+        sessionId: "cancelled",
+        source: "direct",
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("cancelled before dispatch");
+    expect(calls).toBe(0);
   });
 });

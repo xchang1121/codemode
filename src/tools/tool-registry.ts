@@ -151,9 +151,12 @@ export class ToolRegistry {
     const detach = relayAbort(context.signal, controller);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutMs = context.timeoutMs;
-    const call = provider.callTool(tool.originalName, args, {
-      signal: controller.signal,
-      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    const call = Promise.resolve().then(() => {
+      if (controller.signal.aborted) throw signalReason(controller.signal);
+      return provider.callTool(tool.originalName, args, {
+        signal: controller.signal,
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      });
     });
     const guards: Array<Promise<ToolResult>> = [call];
     if (timeoutMs !== undefined && timeoutMs > 0) {
@@ -172,6 +175,11 @@ export class ToolRegistry {
     const guarded = Promise.race(guards);
     try {
       const result = await guarded;
+      if (tool.definition.outputSchema && result.structuredContent === undefined) {
+        throw new ToolValidationError(tool.id, "output", [
+          { message: "structuredContent is required when outputSchema is declared" },
+        ]);
+      }
       if (result.structuredContent !== undefined && tool.definition.outputSchema) {
         const outputValidator = this.validators.get(`${tool.id}:output`);
         if (outputValidator && !outputValidator(result.structuredContent)) {
@@ -305,9 +313,12 @@ function relayAbort(source: AbortSignal | undefined, target: AbortController): (
 
 function abortRejection(signal: AbortSignal): Promise<never> {
   return new Promise((_resolve, reject) => {
-    const rejectAbort = () =>
-      reject(signal.reason instanceof Error ? signal.reason : new Error("Tool call aborted"));
+    const rejectAbort = () => reject(signalReason(signal));
     if (signal.aborted) rejectAbort();
     else signal.addEventListener("abort", rejectAbort, { once: true });
   });
+}
+
+function signalReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("Tool call aborted");
 }

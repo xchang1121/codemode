@@ -44,6 +44,7 @@ export function inferStableBindings(
   const targetPaths = new Map<string, ValuePath>();
   for (const sample of samples) {
     for (const [targetPath] of leaves(sample.target.input)) {
+      if (targetPath.length === 0) continue;
       targetPaths.set(encodePath(targetPath), targetPath);
     }
   }
@@ -83,7 +84,10 @@ export function inferStableBindings(
     }
 
     const candidateReplay = selectedMatches / samples.length;
-    if (!selected || candidateReplay < options.minimumReplayProbability) {
+    if (selected && candidateReplay < options.minimumReplayProbability) {
+      selected = undefined;
+    }
+    if (!selected) {
       const first = targets[0];
       const stableConstant = targets.every((value) => sameValue(value, first));
       const sessions = new Set(samples.map((sample) => sample.target.sessionId));
@@ -190,6 +194,7 @@ function candidateBindings(
     ] as const;
     for (const [field, fieldValue] of fields) {
       for (const [sourcePath, source] of leaves(fieldValue)) {
+        if (sourcePath.length === 0) continue;
         if (isSecretPath(sourcePath)) continue;
         const direct: ValueBinding = { type: "event", relativeEvent, field, path: sourcePath };
         const pathSource = typeof source === "string" && isPathSource(field, sourcePath, source);

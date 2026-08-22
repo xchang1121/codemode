@@ -54,4 +54,21 @@ describe("PpmCountTrie", () => {
 
     expect(restored.snapshot()).toEqual(original.snapshot());
   });
+
+  test("preserves per-target decay recency across persistence", () => {
+    const original = new PpmCountTrie(1);
+    original.setCount([], "stale", 10, 5);
+    original.setCount([], "recent", 4, 25);
+    original.setCount(["search"], "stale", 10, 5);
+    original.setCount(["search"], "recent", 4, 25);
+    const restored = new PpmCountTrie(1);
+    restored.restore(original.snapshot());
+
+    expect(restored.estimate(["search"], "stale", 30, 8)).toEqual(
+      original.estimate(["search"], "stale", 30, 8),
+    );
+    expect(restored.estimate(["search"], "recent", 30, 8)).toEqual(
+      original.estimate(["search"], "recent", 30, 8),
+    );
+  });
 });

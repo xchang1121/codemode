@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -41,6 +42,15 @@ transport.stderr?.on("data", (chunk) => {
 });
 const client = new Client({ name: "codemode-cli-smoke", version: "1.0.0" });
 try {
+  const checked = await runProcess(process.execPath, [
+    join(root, "dist", "cli.js"),
+    "--config",
+    configPath,
+    "--check",
+  ]);
+  assert.equal(checked.exitCode, 0, checked.stderr);
+  assert.match(checked.stdout, /2 tool\(s\), state disabled/);
+
   await client.connect(transport);
   const listed = await client.listTools();
   assert(listed.tools.some((tool) => tool.name === "codemode_execute"));
@@ -67,4 +77,22 @@ try {
 } finally {
   await client.close().catch(() => undefined);
   await rm(directory, { recursive: true, force: true });
+}
+
+function runProcess(command, args) {
+  return new Promise((resolveResult, rejectResult) => {
+    const child = spawn(command, args, { cwd: root, windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.once("error", rejectResult);
+    child.once("close", (exitCode) => {
+      resolveResult({ exitCode, stdout, stderr });
+    });
+  });
 }

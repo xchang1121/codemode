@@ -59,14 +59,30 @@ export class McpToolProvider implements ToolProvider {
       { capabilities: {} },
     );
     const transport = this.injectedTransport ?? createTransport(this.config);
-    await client.connect(transport);
-    this.client = client;
+    try {
+      await client.connect(transport);
+      this.client = client;
+    } catch (error) {
+      await client.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   async listTools(): Promise<readonly ToolDefinition[]> {
     const client = this.requireClient();
-    const result = await client.listTools();
-    return result.tools.map((tool) => structuredClone(tool));
+    const tools: ToolDefinition[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const result = await client.listTools(cursor ? { cursor } : undefined);
+      tools.push(...result.tools.map((tool) => structuredClone(tool)));
+      cursor = result.nextCursor;
+      if (cursor && seenCursors.has(cursor)) {
+        throw new Error(`Upstream ${this.namespace} repeated tools/list cursor ${cursor}`);
+      }
+      if (cursor) seenCursors.add(cursor);
+    } while (cursor);
+    return tools;
   }
 
   async callTool(

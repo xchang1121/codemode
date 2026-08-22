@@ -87,24 +87,30 @@ async function serveStdio(
   stderr: CodeModeTextWriter,
 ): Promise<void> {
   const transport = new StdioServerTransport();
-  await runtime.connect(transport);
-  await new Promise<void>((resolveClosed) => {
-    let resolved = false;
-    const finish = () => {
-      if (resolved) return;
-      resolved = true;
-      process.removeListener("SIGINT", finish);
-      process.removeListener("SIGTERM", finish);
-      resolveClosed();
-    };
-    runtime.gateway.server.onclose = finish;
-    runtime.gateway.server.onerror = (error) => {
-      stderr.write(`[codemode] MCP server error: ${formatError(error)}\n`);
-    };
-    process.once("SIGINT", finish);
-    process.once("SIGTERM", finish);
+  let resolved = false;
+  let resolveClosed: () => void = () => {};
+  const closed = new Promise<void>((resolvePromise) => {
+    resolveClosed = resolvePromise;
   });
-  await runtime.close();
+  const finish = () => {
+    if (resolved) return;
+    resolved = true;
+    resolveClosed();
+  };
+  runtime.gateway.server.onclose = finish;
+  runtime.gateway.server.onerror = (error) => {
+    stderr.write(`[codemode] MCP server error: ${formatError(error)}\n`);
+  };
+  process.once("SIGINT", finish);
+  process.once("SIGTERM", finish);
+  try {
+    await runtime.connect(transport);
+    await closed;
+  } finally {
+    process.removeListener("SIGINT", finish);
+    process.removeListener("SIGTERM", finish);
+    await runtime.close();
+  }
 }
 
 function reportStateWarning(

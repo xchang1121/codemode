@@ -221,16 +221,17 @@ export class FusionLearner {
       const step = pattern
         ? patternToStep(pattern, candidate.probability)
         : candidateToStep(candidate);
+      const contextTools = fusionContextTools(candidate.contextTools, step);
       return {
-        contextTools: candidate.contextTools,
+        contextTools,
         steps: [step],
-        tools: [...candidate.contextTools, candidate.tool],
+        tools: [...contextTools, candidate.tool],
         probability: candidate.probability,
         score: candidate.score,
         dataflowEdges: outputDependencyCount(step),
         visited: new Set([candidate.patternId]),
       };
-    });
+    }).filter((item) => item.dataflowEdges > 0);
     return this.expandPaths(frontiers, schemaHashes);
   }
 
@@ -246,16 +247,18 @@ export class FusionLearner {
       .map((pattern): PathFrontier => {
         const probability = patternReliability(pattern);
         const step = patternToStep(pattern, probability);
+        const contextTools = fusionContextTools(pattern.contextTools, step);
         return {
-          contextTools: pattern.contextTools,
+          contextTools,
           steps: [step],
-          tools: [...pattern.contextTools, pattern.targetTool],
+          tools: [...contextTools, pattern.targetTool],
           probability,
           score: probability * Math.max(1, pattern.averageDurationMs),
           dataflowEdges: outputDependencyCount(step),
           visited: new Set([pattern.id]),
         };
-      });
+      })
+      .filter((item) => item.dataflowEdges > 0);
     return this.expandPaths(starts, schemaHashes).slice(0, Math.max(0, Math.floor(limit)));
   }
 
@@ -289,9 +292,13 @@ export class FusionLearner {
   }
 
   private learn(history: readonly ToolEvent[], target: ToolEvent): void {
+    // Failed calls remain useful PPM context, but they are not authoritative
+    // examples of a reusable input/output program.
+    if (target.outcome !== "success") return;
     const maxLength = Math.min(this.settings.maxOrder, history.length);
     for (let length = 1; length <= maxLength; length++) {
       const contextEvents = history.slice(-length);
+      if (contextEvents.some((event) => event.outcome !== "success")) continue;
       const context = contextEvents.map(eventToken);
       const contextTools = contextEvents.map((event) => event.tool);
       const key = stableHash({
@@ -524,6 +531,20 @@ function outputDependencyCount(step: FusionPathStep): number {
   );
 }
 
+function fusionContextTools(
+  contextTools: readonly string[],
+  step: FusionPathStep,
+): readonly string[] {
+  const requiredDepth = step.dependencies.reduce(
+    (maximum, dependency) => Math.max(
+      maximum,
+      ...dependency.sources.map((source) => Math.abs(source.relativeEvent)),
+    ),
+    0,
+  );
+  return requiredDepth > 0 ? contextTools.slice(-requiredDepth) : [];
+}
+
 function patternReliability(pattern: LearnedToolPattern): number {
   const support = pattern.occurrences / (pattern.occurrences + 1);
   return clampProbability(support * pattern.replayProbability);
@@ -534,9 +555,31 @@ function matchesCurrentSchema(
   schemaHashes: Readonly<Record<string, string>>,
 ): boolean {
   const current = schemaHashes[pattern.targetTool];
-  return current === undefined ||
-    pattern.targetSchemaHash === undefined ||
-    current === pattern.targetSchemaHash;
+  if (
+    current !== undefined &&
+    pattern.targetSchemaHash !== undefined &&
+    current !== pattern.targetSchemaHash
+  ) {
+    return false;
+  }
+  return pattern.context.every((token) => contextSchemaMatches(token, schemaHashes));
+}
+
+function contextSchemaMatches(
+  token: string,
+  schemaHashes: Readonly<Record<string, string>>,
+): boolean {
+  try {
+    const value: unknown = JSON.parse(token);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+    const record = value as Record<string, unknown>;
+    const tool = typeof record.tool === "string" ? record.tool : undefined;
+    const learned = typeof record.schemaHash === "string" ? record.schemaHash : undefined;
+    const current = tool ? schemaHashes[tool] : undefined;
+    return current === undefined || learned === undefined || current === learned;
+  } catch {
+    return true;
+  }
 }
 
 function comparePatterns(left: LearnedToolPattern, right: LearnedToolPattern): number {
@@ -669,6 +712,7 @@ function isLearnedPattern(value: unknown): value is LearnedToolPattern {
     typeof pattern.targetTool === "string" &&
     (pattern.targetSchemaHash === undefined || typeof pattern.targetSchemaHash === "string") &&
     isBindingRecord(pattern.bindings) &&
+    bindingsFitContext(pattern.bindings, pattern.context.length) &&
     Array.isArray(pattern.missing) &&
     pattern.missing.every(isValuePath) &&
     [
@@ -685,8 +729,32 @@ function isBindingRecord(value: unknown): value is Readonly<Record<string, Value
     !!value &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    Object.values(value).every((binding) => isBinding(binding, 0))
+    Object.entries(value).every(
+      ([encodedPath, binding]) => isEncodedSafePath(encodedPath) && isBinding(binding, 0),
+    )
   );
+}
+
+function bindingsFitContext(
+  bindings: Readonly<Record<string, ValueBinding>>,
+  contextLength: number,
+): boolean {
+  return bindingDependencies(bindings).every((dependency) =>
+    dependency.sources.every(
+      (source) => Math.abs(source.relativeEvent) <= contextLength,
+    ),
+  );
+}
+
+function isEncodedSafePath(value: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isValuePath(parsed) && parsed.length > 0 && parsed.every(
+      (segment) => !["__proto__", "prototype", "constructor"].includes(String(segment)),
+    );
+  } catch {
+    return false;
+  }
 }
 
 function isBinding(value: unknown, depth: number): value is ValueBinding {

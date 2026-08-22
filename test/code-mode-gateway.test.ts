@@ -181,6 +181,24 @@ describe("CodeModeGateway", () => {
     );
   });
 
+  test("rejects Code Mode arguments that do not match the published schema", async () => {
+    const invalidSearch = await call("codemode_search", { unexpected: true });
+    expect(invalidSearch.isError).toBe(true);
+    expect(invalidSearch.content[0]).toEqual(
+      expect.objectContaining({ text: expect.stringContaining("Unexpected argument") }),
+    );
+
+    const duplicateAllowlist = await call("codemode_execute", {
+      description: "duplicate",
+      allowed_tools: ["docs::search", "docs::search"],
+      code: "return 1;",
+    });
+    expect(duplicateAllowlist.isError).toBe(true);
+    expect(duplicateAllowlist.content[0]).toEqual(
+      expect.objectContaining({ text: expect.stringContaining("must not contain duplicates") }),
+    );
+  });
+
   async function trainSearchGet(query: string): Promise<void> {
     const searched = await call("docs__search", { query });
     const items = recordArray(searched.structuredContent, "items");

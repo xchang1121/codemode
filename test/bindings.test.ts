@@ -75,6 +75,26 @@ describe("structured binding inference", () => {
       command: "test gamma.spec.ts",
     });
   });
+
+  test("rejects a structural binding that does not meet the replay threshold", () => {
+    const samples = [
+      {
+        context: [event({ sessionId: "one", tool: "search", input: {}, output: { id: "A" } })],
+        target: event({ sessionId: "one", tool: "get", input: { id: "A" } }),
+      },
+      {
+        context: [event({ sessionId: "two", tool: "search", input: {}, output: { id: "B" } })],
+        target: event({ sessionId: "two", tool: "get", input: { id: "different" } }),
+      },
+    ];
+    const inferred = inferStableBindings(samples, {
+      minimumReplayProbability: 0.75,
+      minimumConstantSupport: 4,
+    });
+
+    expect(inferred.bindings).not.toHaveProperty('["id"]');
+    expect(inferred.missing).toContainEqual(["id"]);
+  });
 });
 
 function sample(sessionId: string, id: string, apiToken = "stable-secret") {

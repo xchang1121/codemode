@@ -116,7 +116,8 @@ function positiveInteger(value: number, fallback: number): number {
 }
 
 function errorCode(error: unknown): string | undefined {
-  return asRecord(error)?.code as string | undefined;
+  const code = asRecord(error)?.code;
+  return typeof code === "string" ? code : undefined;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

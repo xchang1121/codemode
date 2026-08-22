@@ -113,6 +113,7 @@ export class CodeModeGateway {
         return errorResult(error);
       }
     });
+    this.lastHintSignature = this.currentHintSignature();
     this.removeListener = this.registry.onInvocation((trace) => this.observeTrace(trace));
   }
 
@@ -167,7 +168,8 @@ export class CodeModeGateway {
   }
 
   private search(args: Readonly<Record<string, unknown>>): CallToolResult {
-    const query = typeof args.query === "string" ? args.query : "";
+    assertOnlyKeys(args, ["query", "limit"]);
+    const query = stringArgument(args, "query");
     const limit = numberArgument(args.limit, 12, 1, 50);
     const tools = this.registry.search(query, limit);
     const pathHints = this.filterHints(
@@ -188,9 +190,8 @@ export class CodeModeGateway {
   }
 
   private describe(args: Readonly<Record<string, unknown>>): CallToolResult {
-    const names = Array.isArray(args.names)
-      ? args.names.filter((value): value is string => typeof value === "string")
-      : [];
+    assertOnlyKeys(args, ["names"]);
+    const names = stringArrayArgument(args, "names", 1, 50, false);
     const tools = names.map((name) => this.registry.require(name));
     const structuredContent = {
       tools: tools.map((tool) => ({
@@ -211,7 +212,8 @@ export class CodeModeGateway {
     args: Readonly<Record<string, unknown>>,
     sessionId: string,
   ): CallToolResult {
-    const task = typeof args.task === "string" ? args.task : "";
+    assertOnlyKeys(args, ["task", "limit"]);
+    const task = args.task === undefined ? "" : stringArgument(args, "task");
     const limit = numberArgument(args.limit, 5, 1, 20);
     const schemaHashes = this.registry.schemaHashes();
     const sessionPaths = this.learner.predictPaths(sessionId, schemaHashes);
@@ -227,16 +229,15 @@ export class CodeModeGateway {
     sessionId: string,
     signal: AbortSignal,
   ): Promise<CallToolResult> {
-    const code = typeof args.code === "string" ? args.code : "";
-    const description = typeof args.description === "string" ? args.description : undefined;
-    const allowedTools = Array.isArray(args.allowed_tools)
-      ? args.allowed_tools.filter((value): value is string => typeof value === "string")
-      : [];
+    assertOnlyKeys(args, ["description", "allowed_tools", "code"]);
+    const code = stringArgument(args, "code");
+    const description = stringArgument(args, "description");
+    const allowedTools = stringArrayArgument(args, "allowed_tools", 1, 10_000, true);
     const result = await this.executor.execute({
       code,
       allowedTools,
       sessionId,
-      ...(description ? { description } : {}),
+      description,
       signal,
     });
     const structuredContent = {
@@ -288,15 +289,21 @@ export class CodeModeGateway {
   }
 
   private notifyHintChanges(): void {
-    const signature = stableStringify(
-      this.learner.commonPaths(8, this.registry.schemaHashes()).map((path) => ({
-        tools: path.tools,
-        probability: Math.round(path.probability * 100),
-      })),
-    );
+    const signature = this.currentHintSignature();
     if (signature === this.lastHintSignature) return;
     this.lastHintSignature = signature;
     if (this.server.transport) void this.server.sendToolListChanged().catch(() => undefined);
+  }
+
+  private currentHintSignature(): string {
+    return stableStringify(
+      this.learner.commonPaths(8, this.registry.schemaHashes()).map((path) => ({
+        tools: path.tools,
+        patternIds: path.steps.map((step) => step.patternId),
+        probability: Math.round(path.probability * 100),
+        dataflowEdges: path.dataflowEdges,
+      })),
+    );
   }
 
   private activeHints(sessionId: string): readonly RenderedFusionHint[] {
@@ -416,6 +423,7 @@ function executeTool(): Tool {
           type: "array",
           items: { type: "string" },
           minItems: 1,
+          maxItems: 10_000,
           uniqueItems: true,
           description: "Explicit upstream tool IDs or gateway names available to the program",
         },
@@ -481,8 +489,48 @@ function numberArgument(
   minimum: number,
   maximum: number,
 ): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-  return Math.max(minimum, Math.min(maximum, Math.floor(value)));
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new TypeError(`Expected an integer from ${minimum} to ${maximum}`);
+  }
+  return value;
+}
+
+function stringArgument(args: Readonly<Record<string, unknown>>, key: string): string {
+  const value = args[key];
+  if (typeof value !== "string") throw new TypeError(`${key} must be a string`);
+  return value;
+}
+
+function stringArrayArgument(
+  args: Readonly<Record<string, unknown>>,
+  key: string,
+  minimum: number,
+  maximum: number,
+  unique: boolean,
+): string[] {
+  const value = args[key];
+  if (
+    !Array.isArray(value) ||
+    value.length < minimum ||
+    value.length > maximum ||
+    value.some((item) => typeof item !== "string")
+  ) {
+    throw new TypeError(`${key} must contain ${minimum}-${maximum} strings`);
+  }
+  const result = value as string[];
+  if (unique && new Set(result).size !== result.length) {
+    throw new TypeError(`${key} must not contain duplicates`);
+  }
+  return [...result];
+}
+
+function assertOnlyKeys(
+  args: Readonly<Record<string, unknown>>,
+  allowed: readonly string[],
+): void {
+  const unexpected = Object.keys(args).filter((key) => !allowed.includes(key));
+  if (unexpected.length) throw new TypeError(`Unexpected argument: ${unexpected.join(", ")}`);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

@@ -74,4 +74,28 @@ describe("McpToolProvider", () => {
     close.push(() => client.close());
     await expect(client.listTools()).resolves.toEqual(expect.objectContaining({ tools: [] }));
   });
+
+  test("collects every upstream tools/list page", async () => {
+    const upstream = new Server(
+      { name: "upstream-pages", version: "1.0.0" },
+      { capabilities: { tools: {} } },
+    );
+    upstream.setRequestHandler(ListToolsRequestSchema, (request) =>
+      request.params?.cursor === "second"
+        ? { tools: [{ name: "two", inputSchema: { type: "object" } }] }
+        : {
+            tools: [{ name: "one", inputSchema: { type: "object" } }],
+            nextCursor: "second",
+          },
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await upstream.connect(serverTransport);
+    close.push(() => upstream.close());
+
+    const registry = new ToolRegistry();
+    await registry.addProvider(McpToolProvider.fromTransport("paged", clientTransport));
+    close.push(() => registry.close());
+
+    expect(registry.list().map((tool) => tool.id)).toEqual(["paged::one", "paged::two"]);
+  });
 });
